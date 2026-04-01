@@ -1,162 +1,217 @@
 import pygame
+import random
 import sys
-import math
 
 pygame.init()
 
+def get_korean_font(size):
+    candidates = ["malgungothic", "applegothic", "nanumgothic", "notosanscjk"]
+    for name in candidates:
+        font = pygame.font.SysFont(name, size)
+        if font.get_ascent() > 0:
+            return font
+    return pygame.font.SysFont(None, size)
+
 WIDTH, HEIGHT = 800, 600
+FPS = 60
+
+WHITE  = (255, 255, 255)
+BLACK  = (0, 0, 0)
+BLUE   = (50, 120, 220)
+RED    = (220, 50, 50)
+YELLOW = (240, 200, 0)
+GRAY   = (40, 40, 40)
+
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Dodger")
 clock = pygame.time.Clock()
-font = pygame.font.SysFont(None, 30)
 
-WHITE = (255, 255, 255)
-GRAY = (150, 150, 150)
-RED = (255, 0, 0)
-BLUE = (0, 0, 255)
-GREEN = (0, 255, 0)
+font = get_korean_font(36)
+font_big = get_korean_font(72)
 
-player = pygame.Rect(100, 100, 80, 80)
+LEVELS = [
+    {"min_speed": 3, "max_speed": 5, "spawn": 40, "label": "Lv.1"},
+    {"min_speed": 5, "max_speed": 8, "spawn": 25, "label": "Lv.2"},
+    {"min_speed": 7, "max_speed": 12, "spawn": 15, "label": "Lv.3"},
+]
 
-center_pos = (WIDTH // 2, HEIGHT // 2)
-box_size = 100
-angle = 0
+PLAYER_W, PLAYER_H = 50, 30
+ENEMY_W, ENEMY_H = 30, 30
 
-speed = 5
+def spawn_enemy(level_cfg):
+    x = random.randint(0, WIDTH - ENEMY_W)
+    speed = random.randint(level_cfg["min_speed"], level_cfg["max_speed"])
+    return [pygame.Rect(x, -ENEMY_H, ENEMY_W, ENEMY_H), speed, "red", "", [0, 0], 0]
 
-def get_rotated_corners(center, w, h, angle_deg):
-    angle_rad = math.radians(angle_deg)
-    hw, hh = w / 2, h / 2
+def spawn_yellow_enemy():
+    x = random.randint(0, WIDTH - ENEMY_W)
+    rect = pygame.Rect(x, -ENEMY_H, ENEMY_W, ENEMY_H)
+    return [rect, 4, "yellow", "fall", [0, 0], 0]
 
-    corners = [(-hw,-hh),(hw,-hh),(hw,hh),(-hw,hh)]
-    rotated = []
+def draw_dashed_line(surface, color, start_pos, end_pos, dash_length=10):
+    x1, y1 = start_pos
+    x2, y2 = end_pos
 
-    for x, y in corners:
-        rx = x * math.cos(angle_rad) - y * math.sin(angle_rad)
-        ry = x * math.sin(angle_rad) + y * math.cos(angle_rad)
-        rotated.append((center[0] + rx, center[1] + ry))
+    dx = x2 - x1
+    dy = y2 - y1
+    dist = max(1, (dx**2 + dy**2) ** 0.5)
 
-    return rotated
+    dx /= dist
+    dy /= dist
 
-def get_axes(corners):
-    axes = []
-    for i in range(len(corners)):
-        p1 = corners[i]
-        p2 = corners[(i+1) % len(corners)]
+    for i in range(0, int(dist), dash_length * 2):
+        start = (x1 + dx * i, y1 + dy * i)
+        end = (x1 + dx * (i + dash_length), y1 + dy * (i + dash_length))
+        pygame.draw.line(surface, color, start, end, 2)
 
-        edge = (p2[0] - p1[0], p2[1] - p1[1])
-        normal = (-edge[1], edge[0])
+def draw_hud(score, level_cfg, lives):
+    screen.blit(font.render(f"Score: {score}", True, WHITE), (10, 10))
+    screen.blit(font.render(level_cfg['label'], True, YELLOW), (10, 40))
+    screen.blit(font.render(f"Lives: {'♥ ' * lives}", True, RED), (WIDTH - 180, 10))
 
-        length = math.hypot(normal[0], normal[1])
-        normal = (normal[0]/length, normal[1]/length)
-
-        axes.append(normal)
-    return axes
-
-def project(corners, axis):
-    dots = []
-    for p in corners:
-        dots.append(p[0]*axis[0] + p[1]*axis[1])
-    return min(dots), max(dots)
-
-def sat_collision(c1, c2):
-    axes = get_axes(c1) + get_axes(c2)
-
-    for axis in axes:
-        min1, max1 = project(c1, axis)
-        min2, max2 = project(c2, axis)
-
-        if max1 < min2 or max2 < min1:
-            return False
-    return True
-
-running = True
-while running:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-
-    keys = pygame.key.get_pressed()
-
-    if keys[pygame.K_LEFT]:
-        player.x -= speed
-    if keys[pygame.K_RIGHT]:
-        player.x += speed
-    if keys[pygame.K_UP]:
-        player.y -= speed
-    if keys[pygame.K_DOWN]:
-        player.y += speed
-
-    if keys[pygame.K_z]:
-        angle += 5
-    else:
-        angle += 1
-
-    screen.fill(WHITE)
-
-    # -------------------------
-    # Circle Collision
-    # -------------------------
-    p_center = player.center
-    c_center = center_pos
-
-    p_radius = player.width // 2
-    c_radius = box_size // 2
-
-    dx = p_center[0] - c_center[0]
-    dy = p_center[1] - c_center[1]
-
-    circle_hit = (dx*dx + dy*dy) < (p_radius + c_radius) ** 2
-
-    # -------------------------
-    # AABB Collision
-    # -------------------------
-    aabb_box = pygame.Rect(center_pos[0] - box_size//2,
-                           center_pos[1] - box_size//2,
-                           box_size, box_size)
-
-    aabb_hit = player.colliderect(aabb_box)
-
-    # -------------------------
-    # OBB Collision (SAT)
-    # -------------------------
-    player_corners = [
-        player.topleft,
-        player.topright,
-        player.bottomright,
-        player.bottomleft
-    ]
-
-    box_corners = get_rotated_corners(center_pos, box_size, box_size, angle)
-
-    obb_hit = sat_collision(player_corners, box_corners)
-
-    # -------------------------
-    # Draw Objects
-    # -------------------------
-    pygame.draw.rect(screen, GRAY, player)
-    pygame.draw.rect(screen, RED, player, 2)
-
-    pygame.draw.rect(screen, RED, aabb_box, 2)
-
-    pygame.draw.circle(screen, BLUE, p_center, p_radius, 2)
-    pygame.draw.circle(screen, BLUE, c_center, c_radius, 2)
-
-    pygame.draw.polygon(screen, GRAY, box_corners)
-    pygame.draw.polygon(screen, GREEN, box_corners, 2)
-
-    # -------------------------
-    # Text Display
-    # -------------------------
-    circle_text = font.render(f"Circle: {'HIT' if circle_hit else 'NO'}", True, (0,0,0))
-    aabb_text = font.render(f"AABB : {'HIT' if aabb_hit else 'NO'}", True, (0,0,0))
-    obb_text = font.render(f"OBB  : {'HIT' if obb_hit else 'NO'}", True, (0,0,0))
-
-    screen.blit(circle_text, (10, 10))
-    screen.blit(aabb_text, (10, 35))
-    screen.blit(obb_text, (10, 60))
-
+def game_over_screen(score):
+    screen.fill(GRAY)
+    screen.blit(font_big.render("GAME OVER", True, RED), (220, 220))
+    screen.blit(font.render(f"Score: {score}", True, WHITE), (350, 310))
+    screen.blit(font.render("R: Restart   Q: Quit", True, WHITE), (270, 360))
     pygame.display.flip()
-    clock.tick(60)
 
-pygame.quit()
-sys.exit()
+    while True:
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+
+            if e.type == pygame.KEYDOWN:
+                if e.key == pygame.K_r:
+                    return True
+                if e.key == pygame.K_q:
+                    pygame.quit()
+                    sys.exit()
+
+def main():
+    player = pygame.Rect(WIDTH // 2 - PLAYER_W // 2, HEIGHT - 60, PLAYER_W, PLAYER_H)
+
+    enemies = []
+    score = 0
+    lives = 3
+    spawn_timer = 0
+    level_idx = 0
+    level_cfg = LEVELS[level_idx]
+    invincible = 0
+
+    while True:
+        clock.tick(FPS)
+
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+
+        keys = pygame.key.get_pressed()
+
+        if keys[pygame.K_LEFT] and player.left > 0:
+            player.x -= 5
+        if keys[pygame.K_RIGHT] and player.right < WIDTH:
+            player.x += 5
+        if keys[pygame.K_UP] and player.top > 0:
+            player.y -= 5
+        if keys[pygame.K_DOWN] and player.bottom < HEIGHT:
+            player.y += 5
+
+        # 🔥 스폰
+        spawn_timer += 1
+        if spawn_timer >= level_cfg["spawn"]:
+            spawn_timer = 0
+            if random.random() < 0.2:
+                enemies.append(spawn_yellow_enemy())
+            else:
+                enemies.append(spawn_enemy(level_cfg))
+
+        # 🔥 이동 처리
+        survived = []
+        for e in enemies:
+            rect = e[0]
+
+            if e[2] == "red":
+                rect.y += e[1]
+
+            elif e[2] == "yellow":
+                if e[3] == "fall":
+                    rect.y += e[1]
+                    if rect.y > 150:
+                        e[3] = "warn"
+                        e[5] = 0
+
+                elif e[3] == "warn":
+                    e[5] += 1
+                    if e[5] > 30:
+                        dx = player.centerx - rect.centerx
+                        dy = player.centery - rect.centery
+                        dist = max(1, (dx**2 + dy**2) ** 0.5)
+                        e[4] = [dx / dist, dy / dist]
+                        e[3] = "dash"
+
+                elif e[3] == "dash":
+                    rect.x += int(e[4][0] * 10)
+                    rect.y += int(e[4][1] * 10)
+
+            if rect.top < HEIGHT and rect.bottom > 0:
+                survived.append(e)
+            else:
+                if e[2] == "red":
+                    score += 1
+
+        enemies = survived
+
+        # 충돌
+        if invincible > 0:
+            invincible -= 1
+        else:
+            for e in enemies:
+                if player.colliderect(e[0]):
+                    lives -= 1
+                    invincible = 90
+                    enemies.clear()
+
+                    if lives <= 0:
+                        if game_over_screen(score):
+                            main()
+                        return
+                    break
+
+        level_idx = min(score // 20, len(LEVELS) - 1)
+        level_cfg = LEVELS[level_idx]
+
+        # 🎨 그리기
+        screen.fill(GRAY)
+
+        blink = (invincible // 10) % 2 == 0
+        if blink:
+            pygame.draw.rect(screen, BLUE, player)
+
+        for e in enemies:
+            if e[2] == "red":
+                pygame.draw.rect(screen, RED, e[0])
+
+            elif e[2] == "yellow":
+                rect = e[0]
+
+                if e[3] == "warn":
+                    if (e[5] // 5) % 2 == 0:
+                        pygame.draw.rect(screen, YELLOW, rect)
+
+                    draw_dashed_line(
+                        screen,
+                        YELLOW,
+                        rect.center,
+                        player.center,
+                        dash_length=8
+                    )
+                else:
+                    pygame.draw.rect(screen, YELLOW, rect)
+
+        draw_hud(score, level_cfg, lives)
+        pygame.display.flip()
+
+main()
