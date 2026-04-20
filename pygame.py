@@ -74,6 +74,19 @@ ITEM_SPAWN_INTERVAL = 720
 # 최대 체력 (이 이상이면 하트 아이템 스폰 안 함)
 MAX_LIVES = 4
 
+HUNGER_MAX = 100.0
+
+# 레벨이 높을수록 더 빨리 닳음
+HUNGER_DRAIN_BY_LEVEL = [
+    0.035,   # Lv.1
+    0.055,   # Lv.2
+    0.080,   # Lv.3
+]
+
+# 적을 먹었을 때 회복량
+HUNGER_GAIN_RED = 8
+HUNGER_GAIN_YELLOW = 18
+
 class Item:
     """화면 위에서 천천히 떨어지는 수집 아이템 베이스"""
     def __init__(self, kind):
@@ -173,8 +186,8 @@ class Item:
             rect = pygame.Rect(cx - arc_r, cy - arc_r, arc_r * 2, arc_r * 2)
             start = base_angle
             end   = base_angle + math.pi * 1.3
-            pygame.draw.arc(screen, (80, 200, 255), rect,
-                            min(start, end), max(start, end), 2)
+            pygame.draw.arc(surface, (80, 200, 255), rect,
+                    min(start, end), max(start, end), 2)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -350,41 +363,78 @@ def draw_dashed_line(surface, color, start_pos, end_pos, dash_length=10):
         e = (x1 + dx * (i+dash_length), y1 + dy * (i+dash_length))
         pygame.draw.line(surface, color, s, e, 2)
 
-def draw_hud(score, last_gain, level_cfg, lives, eat_cooldown, player_rect,
-             eat_boost_timer):
+def draw_hud(surface, score, last_gain, level_cfg, lives, eat_cooldown, player_rect,
+             eat_boost_timer, hunger):
     score_base = font.render(f"Score: {score}", True, WHITE)
     score_x = WIDTH // 2 - score_base.get_width() // 2
-    screen.blit(score_base, (score_x, 10))
+    surface.blit(score_base, (score_x, 10))
 
     if last_gain > 0:
         gain_surf = font_small.render(f"+{last_gain}", True, (255, 200, 80))
-        screen.blit(gain_surf, (score_x + score_base.get_width() + 6, 14))
+        surface.blit(gain_surf, (score_x + score_base.get_width() + 6, 14))
 
+    # 하트는 오른쪽에서 살짝 왼쪽으로 이동
     lives_text = font.render(f"{'♥ ' * lives}", True, RED)
-    screen.blit(lives_text, (WIDTH - lives_text.get_width() - 10, 10))
+    surface.blit(lives_text, (WIDTH - lives_text.get_width() - 50, 10))
 
-    screen.blit(font.render(level_cfg['label'], True, YELLOW), (10, HEIGHT - 44))
+    surface.blit(font.render(level_cfg['label'], True, YELLOW), (10, HEIGHT - 44))
 
     if eat_boost_timer > 0:
         secs = math.ceil(eat_boost_timer / FPS)
         boost_surf = font_small.render(f"EAT BOOST  {secs}s", True, (80, 220, 255))
-        screen.blit(boost_surf, (10, 10))
+        surface.blit(boost_surf, (10, 10))
 
     cx, cy = player_rect.centerx, player_rect.centery
     RING_R = 38
-    pygame.draw.circle(screen, (80, 80, 80), (cx, cy), RING_R, 3)
+    pygame.draw.circle(surface, (80, 80, 80), (cx, cy), RING_R, 3)
     ratio = 1.0 - eat_cooldown / 60
     if ratio > 0:
         arc_rect = pygame.Rect(cx - RING_R, cy - RING_R, RING_R * 2, RING_R * 2)
         start_angle = math.pi / 2
         end_angle   = start_angle - ratio * 2 * math.pi
-        pygame.draw.arc(screen, (255, 100, 180), arc_rect,
+        pygame.draw.arc(surface, (255, 100, 180), arc_rect,
                         min(start_angle, end_angle),
                         max(start_angle, end_angle), 3)
 
     if eat_boost_timer > 0:
         pulse = int(math.sin(pygame.time.get_ticks() * 0.01) * 4)
-        pygame.draw.circle(screen, (80, 220, 255), (cx, cy), RING_R + 8 + pulse, 2)
+        pygame.draw.circle(surface, (80, 220, 255), (cx, cy), RING_R + 8 + pulse, 2)
+
+    # ── 허기 게이지 ─────────────────────────────
+    bar_w = 22
+    bar_h = 360
+    bar_x = WIDTH - 34
+    bar_y = HEIGHT // 2 - bar_h // 2
+
+    hunger_ratio = max(0.0, min(1.0, hunger / HUNGER_MAX))
+
+    # 비율에 따라 색상 변화
+    if hunger_ratio > 0.6:
+        hunger_color = (80, 220, 120)
+    elif hunger_ratio > 0.3:
+        hunger_color = (255, 190, 60)
+    else:
+        hunger_color = (255, 90, 90)
+
+    # 라벨
+    hunger_label = font_small.render("허기", True, WHITE)
+    surface.blit(hunger_label, (bar_x - hunger_label.get_width() // 2 + bar_w // 2, bar_y - 30))
+
+    # 바 배경
+    pygame.draw.rect(surface, (70, 70, 70), (bar_x, bar_y, bar_w, bar_h), border_radius=8)
+    pygame.draw.rect(surface, WHITE, (bar_x, bar_y, bar_w, bar_h), 2, border_radius=8)
+
+    # 채워진 양 (아래에서 위로)
+    fill_h = int(bar_h * hunger_ratio)
+    if fill_h > 0:
+        fill_rect = pygame.Rect(bar_x + 3, bar_y + bar_h - fill_h + 3, bar_w - 6, fill_h - 6)
+        if fill_rect.height > 0:
+            pygame.draw.rect(surface, hunger_color, fill_rect, border_radius=6)
+
+    # 위험 상태일 때 깜빡임
+    if hunger_ratio <= 0.2 and (pygame.time.get_ticks() // 180) % 2 == 0:
+        warning = font_small.render("EMPTY", True, RED)
+        surface.blit(warning, (bar_x - warning.get_width() - 8, bar_y + bar_h - 20))
 
 def game_over_screen(score):
     screen.fill(GRAY)
@@ -429,6 +479,7 @@ def main():
     last_gain = 0
     last_gain_timer = 0
     lives = 4
+    hunger = HUNGER_MAX
     spawn_timer = 0
     level_idx   = 0
     level_cfg   = LEVELS[level_idx]
@@ -437,19 +488,32 @@ def main():
 
     being_eaten = {}
 
+    game_surface = pygame.Surface((WIDTH, HEIGHT))
+    shake_timer = 0
+    shake_strength = 0
+
     EAT_RANGE      = 80
     EAT_PULL_TICKS = 18
 
     while True:
         dt = clock.tick(FPS)
+        
+        prev_eat_boost_timer = eat_boost_timer
 
         if invincible > 0:
             invincible -= 1
         eat_active   = max(0, eat_active - 1)
         eat_cooldown = max(0, eat_cooldown - 1)
+        
         if eat_boost_timer > 0:
             eat_boost_timer -= 1
             eat_active = max(eat_active, 1)
+            
+        if prev_eat_boost_timer > 0 and eat_boost_timer == 0:
+            invincible = max(invincible, 90)
+            flash_bursts.append(
+                FlashBurst(player.centerx, player.centery, (80, 220, 255))
+            )
 
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
@@ -491,12 +555,17 @@ def main():
         item_spawn_timer += 1
         if item_spawn_timer >= ITEM_SPAWN_INTERVAL:
             item_spawn_timer = 0
-            # 체력이 최대(4)이면 하트는 스폰하지 않고 swirl만 등장
+
             if lives >= MAX_LIVES:
-                kind = "swirl"
+                # 체력 최대일 때: 낮은 확률로만 swirl 등장
+                kind = "swirl" if random.random() < 0.4 else None
             else:
-                kind = random.choice(["heart", "swirl"])
-            items.append(Item(kind))
+                # 일반 상태: heart 많고 swirl 적게
+                kind = "heart" if random.random() < 0.8 else "swirl"
+
+            # kind가 None이면 생성 안 함
+            if kind:
+                items.append(Item(kind))
 
         # ── 아이템 업데이트 & 먹기 스킬 처리 ────────────
         new_items = []
@@ -582,6 +651,10 @@ def main():
                     score += gain
                     last_gain = gain
                     last_gain_timer = 90
+
+                    hunger_gain = HUNGER_GAIN_RED if is_red else HUNGER_GAIN_YELLOW
+                    hunger = min(HUNGER_MAX, hunger + hunger_gain)
+
                     flash_bursts.append(FlashBurst(player.centerx, player.centery, (255, 100, 180)))
                     score_popups.append(ScorePopup(rect.centerx, rect.centery - 10,
                                                    f"+{gain}",
@@ -625,7 +698,10 @@ def main():
             if invincible <= 0 and player.colliderect(rect):
                 lives -= 1
                 invincible = 90
+                shake_timer = 18
+                shake_strength = 12
                 being_eaten.clear(); enemies.clear()
+
                 if lives <= 0:
                     if game_over_screen(score): main()
                     return
@@ -639,8 +715,18 @@ def main():
         level_idx = new_level_idx
         level_cfg = LEVELS[level_idx]
 
+        hunger -= HUNGER_DRAIN_BY_LEVEL[level_idx]
+        hunger = max(0, hunger)
+
+        if hunger <= 0:
+            if game_over_screen(score): main()
+            return
+
         if last_gain_timer > 0: last_gain_timer -= 1
         else:                   last_gain = 0
+
+        if shake_timer > 0:
+            shake_timer -= 1
 
         level_up_banners    = [b for b in level_up_banners    if b.update()]
         absorb_particles    = [p for p in absorb_particles    if p.update()]
@@ -651,12 +737,13 @@ def main():
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 그리기
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        screen.fill(GRAY)
+        game_surface.fill(GRAY)
 
-        for ring in eat_rings: ring.draw(screen)
+        for ring in eat_rings:
+            ring.draw(game_surface)
 
         for item in items:
-            item.draw(screen)
+            item.draw(game_surface)
 
         blink = (invincible // 10) % 2 == 0
         if blink:
@@ -664,49 +751,61 @@ def main():
             frame_img = pygame.transform.scale(raw_frame, (player.width, player.height))
             if facing_left:
                 frame_img = pygame.transform.flip(frame_img, True, False)
-            screen.blit(frame_img, player.topleft)
+            game_surface.blit(frame_img, player.topleft)
 
             if eat_active > 0:
                 pulse = int((1.0 - (eat_active % 20) / 20) * 10)
                 ec = (80, 220, 255) if eat_boost_timer > 0 else (255, 100, 180)
-                pygame.draw.circle(screen, ec, player.center, EAT_RANGE + pulse, 1)
+                pygame.draw.circle(game_surface, ec, player.center, EAT_RANGE + pulse, 1)
                 s = pygame.Surface((EAT_RANGE * 2, EAT_RANGE * 2), pygame.SRCALPHA)
                 fill_c = (*ec, 30)
                 pygame.draw.circle(s, fill_c, (EAT_RANGE, EAT_RANGE), EAT_RANGE)
-                screen.blit(s, (player.centerx - EAT_RANGE,
-                                player.centery - EAT_RANGE))
+                game_surface.blit(s, (player.centerx - EAT_RANGE,
+                                      player.centery - EAT_RANGE))
 
         for e in enemies:
-            eid  = id(e[0]); rect = e[0]
+            eid  = id(e[0])
+            rect = e[0]
             if eid in being_eaten:
                 progress = being_eaten[eid] / EAT_PULL_TICKS
                 scale    = max(0.2, 1.0 - progress * 0.8)
                 w = max(1, int(rect.width  * scale))
                 h = max(1, int(rect.height * scale))
                 color = RED if e[2] == "red" else YELLOW
-                pygame.draw.rect(screen, color,
+                pygame.draw.rect(game_surface, color,
                                  pygame.Rect(rect.centerx - w//2,
                                              rect.centery - h//2, w, h))
             elif e[2] == "red":
-                pygame.draw.rect(screen, RED, rect)
+                pygame.draw.rect(game_surface, RED, rect)
             elif e[2] == "yellow":
                 if e[3] == "warn":
                     if (e[5] // 5) % 2 == 0:
-                        pygame.draw.rect(screen, YELLOW, rect)
-                    draw_dashed_line(screen, YELLOW, rect.center,
+                        pygame.draw.rect(game_surface, YELLOW, rect)
+                    draw_dashed_line(game_surface, YELLOW, rect.center,
                                      player.center, dash_length=8)
                 else:
-                    pygame.draw.rect(screen, YELLOW, rect)
+                    pygame.draw.rect(game_surface, YELLOW, rect)
 
-        for p in absorb_particles: p.draw(screen)
-        for f in flash_bursts:     f.draw(screen)
-        for popup in score_popups: popup.draw(screen)
-        for banner in level_up_banners: banner.draw(screen)
+        for p in absorb_particles:
+            p.draw(game_surface)
+        for f in flash_bursts:
+            f.draw(game_surface)
+        for popup in score_popups:
+            popup.draw(game_surface)
+        for banner in level_up_banners:
+            banner.draw(game_surface)
 
-        draw_hud(score, last_gain, level_cfg, lives, eat_cooldown, player,
-                 eat_boost_timer)
+        draw_hud(game_surface, score, last_gain, level_cfg, lives, eat_cooldown, player,
+                 eat_boost_timer, hunger)
+
+        screen.fill(BLACK)
+        shake_x, shake_y = 0, 0
+        if shake_timer > 0:
+            shake_x = random.randint(-shake_strength, shake_strength)
+            shake_y = random.randint(-shake_strength, shake_strength)
+
+        screen.blit(game_surface, (shake_x, shake_y))
         pygame.display.flip()
-
 
 def title_screen():
     font_title = get_korean_font(80)
@@ -726,7 +825,7 @@ def title_screen():
 
         screen.fill(GRAY)
 
-        title_surf = font_title.render("Crazy Begin", True, PINK)
+        title_surf = font_title.render("Hungry Slime", True, PINK)
         tx = WIDTH // 2 - title_surf.get_width() // 2
         ty = 140 + int(math.sin(tick * 0.05) * 6)
         screen.blit(title_surf, (tx, ty))
@@ -756,7 +855,6 @@ def title_screen():
             screen.blit(ds, (x + ks.get_width() + ss.get_width(), y))
 
         pygame.display.flip()
-
 
 title_screen()
 main()
