@@ -25,6 +25,8 @@ RED    = (220, 50, 50)
 YELLOW = (240, 200, 0)
 GRAY   = (40, 40, 40)
 CYAN   = (0, 255, 255)
+PURPLE = (160, 60, 220)
+ORANGE = (255, 140, 0)
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Hungry Slime")
@@ -34,11 +36,25 @@ font = get_korean_font(36)
 font_big = get_korean_font(72)
 font_small = get_korean_font(22)
 
+# Lv.1~10 설정
+# 적 속도: 기존 Lv.3(min7,max12)이 Lv.8 수준이 되도록 보간
+# 스폰 간격: 빠를수록 적이 많이 나옴 (낮은 값 = 자주 스폰)
+# 노란/주황/보라 적 해금: Lv.3 / Lv.5 / Lv.5
 LEVELS = [
-    {"min_speed": 3, "max_speed": 5, "spawn": 40, "label": "Lv.1"},
-    {"min_speed": 5, "max_speed": 8, "spawn": 25, "label": "Lv.2"},
-    {"min_speed": 7, "max_speed": 12, "spawn": 15, "label": "Lv.3"},
+    {"min_speed": 3, "max_speed": 5,  "spawn": 55, "label": "Lv.1"},   # 1
+    {"min_speed": 4, "max_speed": 6,  "spawn": 50, "label": "Lv.2"},   # 2
+    {"min_speed": 4, "max_speed": 7,  "spawn": 45, "label": "Lv.3"},   # 3  ← 노란 해금
+    {"min_speed": 3, "max_speed": 6,  "spawn": 40, "label": "Lv.4"},   # 4
+    {"min_speed": 4, "max_speed": 7,  "spawn": 34, "label": "Lv.5"},   # 5  ← 주황/보라 해금
+    {"min_speed": 5, "max_speed": 8,  "spawn": 28, "label": "Lv.6"},   # 6
+    {"min_speed": 5, "max_speed": 10, "spawn": 23, "label": "Lv.7"},   # 7
+    {"min_speed": 7, "max_speed": 12, "spawn": 18, "label": "Lv.8"},   # 8  ← 기존 Lv.3 속도
+    {"min_speed": 8, "max_speed": 14, "spawn": 14, "label": "Lv.9"},   # 9
+    {"min_speed": 9, "max_speed": 16, "spawn": 10, "label": "Lv.10"},  # 10 MAX
 ]
+
+# 레벨별 점수 임계값 (score >= 이 값이면 해당 레벨)
+LEVEL_SCORE_THRESHOLDS = [0, 15, 35, 60, 90, 130, 180, 240, 320, 420]
 
 PLAYER_W, PLAYER_H = 50, 50
 ENEMY_W, ENEMY_H = 30, 30
@@ -67,30 +83,31 @@ walk_frames = all_frames[3:6]
 
 ITEM_SPEED = 3
 ITEM_R     = 20
-
-# 아이템 스폰 간격: 기존 420프레임(7초) → 720프레임(12초)으로 조정
 ITEM_SPAWN_INTERVAL = 720
-
-# 최대 체력 (이 이상이면 하트 아이템 스폰 안 함)
-MAX_LIVES = 4
-
+MAX_LIVES = 5
 HUNGER_MAX = 100.0
 
-# 레벨이 높을수록 더 빨리 닳음
 HUNGER_DRAIN_BY_LEVEL = [
-    0.035,   # Lv.1
-    0.055,   # Lv.2
-    0.080,   # Lv.3
+    0.020,   # Lv.1  (매우 느림)
+    0.030,   # Lv.2
+    0.040,   # Lv.3  ← 기존 Lv.3과 비슷한 속도(0.080 → 완만하게 재배치)
+    0.052,   # Lv.4
+    0.065,   # Lv.5
+    0.080,   # Lv.6
+    0.096,   # Lv.7
+    0.114,   # Lv.8
+    0.134,   # Lv.9
+    0.158,   # Lv.10 MAX (가장 빠름)
 ]
 
-# 적을 먹었을 때 회복량
 HUNGER_GAIN_RED = 8
 HUNGER_GAIN_YELLOW = 18
+HUNGER_GAIN_PURPLE = 0
+HUNGER_GAIN_ORANGE = 12
 
 class Item:
-    """화면 위에서 천천히 떨어지는 수집 아이템 베이스"""
     def __init__(self, kind):
-        self.kind   = kind          # "heart" | "swirl"
+        self.kind   = kind
         self.x      = float(random.randint(ITEM_R, WIDTH - ITEM_R))
         self.y      = float(-ITEM_R * 2)
         self.speed  = ITEM_SPEED
@@ -161,7 +178,6 @@ class Item:
         s = pygame.Surface((size * 4, size * 4), pygame.SRCALPHA)
         sc = size * 2
         color = (255, 80, 120, 230)
-
         off = size // 2
         r2  = size // 2 + 1
         pygame.draw.circle(s, color, (sc - off, sc - off), r2)
@@ -249,7 +265,7 @@ class ScorePopup:
 
     def draw(self, surface):
         alpha = int(self.life * 255)
-        s = pygame.Surface((120, 40), pygame.SRCALPHA)
+        s = pygame.Surface((200, 40), pygame.SRCALPHA)
         txt = self.font.render(self.text, True, (*self.color, alpha))
         s.blit(txt, (0, 0))
         surface.blit(s, (int(self.x) - 30, int(self.y)))
@@ -299,6 +315,120 @@ class FlashBurst:
         s = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
         pygame.draw.circle(s, (*self.color, alpha), (r + 1, r + 1), r)
         surface.blit(s, (self.x - r - 1, self.y - r - 1))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 보라색 적 폭발 파티클
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class PurpleExplosionParticle:
+    """보라색 적이 폭발할 때 튀어나오는 파티클"""
+    def __init__(self, x, y):
+        self.x = float(x)
+        self.y = float(y)
+        angle = random.uniform(0, math.pi * 2)
+        speed = random.uniform(3, 9)
+        self.vx = math.cos(angle) * speed
+        self.vy = math.sin(angle) * speed
+        self.life = 1.0
+        self.size = random.randint(4, 10)
+        self.color = random.choice([
+            (200, 80, 255), (160, 40, 220), (255, 120, 255),
+            (120, 0, 200), (220, 150, 255)
+        ])
+
+    def update(self):
+        self.life -= 0.04
+        self.x += self.vx
+        self.y += self.vy
+        self.vx *= 0.92
+        self.vy *= 0.92
+        return self.life > 0
+
+    def draw(self, surface):
+        alpha = int(self.life * 255)
+        size = max(1, int(self.size * self.life))
+        s = pygame.Surface((size * 2 + 2, size * 2 + 2), pygame.SRCALPHA)
+        pygame.draw.circle(s, (*self.color, alpha), (size + 1, size + 1), size)
+        surface.blit(s, (int(self.x) - size - 1, int(self.y) - size - 1))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 주황색 적 경보 기둥
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class OrangeWarningPillar:
+    """주황색 적이 강하하기 전에 표시되는 경보 기둥 — 플레이어를 실시간 추적"""
+    WARN_DURATION = FPS * 3  # 3초
+
+    def __init__(self, player_ref):
+        self.player_ref = player_ref   # player Rect 참조 (실시간 추적용)
+        self.x = float(player_ref.centerx)
+        self.timer = 0
+        self.done = False
+        self.final_x = None            # 카운트 완료 시 확정 X
+
+    @property
+    def countdown(self):
+        remaining = self.WARN_DURATION - self.timer
+        return max(0, math.ceil(remaining / FPS))
+
+    def update(self):
+        self.timer += 1
+        # 마지막 0.5초(30프레임) 전까지는 플레이어를 추적
+        if self.timer < self.WARN_DURATION - 30:
+            self.x = float(self.player_ref.centerx)
+        if self.timer >= self.WARN_DURATION:
+            self.final_x = int(self.x)
+            self.done = True
+        return not self.done
+
+    def draw(self, surface):
+        ratio = self.timer / self.WARN_DURATION
+        alpha = int(100 + 80 * math.sin(self.timer * 0.25))
+        cx = int(self.x)
+
+        # 마지막 30프레임은 빠르게 깜빡이며 "확정" 표시
+        locked = self.timer >= self.WARN_DURATION - 30
+        if locked and (self.timer // 4) % 2 == 0:
+            return  # 빠른 깜빡임으로 위험 강조
+
+        # 기둥 (화면 위부터 아래까지)
+        pillar_w = 32
+        pillar_surf = pygame.Surface((pillar_w, HEIGHT), pygame.SRCALPHA)
+        pillar_color = (255, 140, 0, max(20, alpha // 3))
+        pillar_surf.fill(pillar_color)
+        surface.blit(pillar_surf, (cx - pillar_w // 2, 0))
+
+        # 외곽선
+        line_s = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        pygame.draw.line(line_s, (255, 140, 0, alpha),
+                         (cx - pillar_w // 2, 0),
+                         (cx - pillar_w // 2, HEIGHT), 1)
+        pygame.draw.line(line_s, (255, 140, 0, alpha),
+                         (cx + pillar_w // 2, 0),
+                         (cx + pillar_w // 2, HEIGHT), 1)
+        surface.blit(line_s, (0, 0))
+
+        # 카운트다운 숫자
+        count = self.countdown
+        count_font = get_korean_font(48)
+        count_surf = count_font.render(str(count), True, (255, 200, 80))
+        tx = cx - count_surf.get_width() // 2
+        if (self.timer // 15) % 2 == 0:
+            surface.blit(count_surf, (tx, HEIGHT // 2 - 30))
+
+        # 경고 삼각형 (화살표)
+        tip_y = 20 + int(math.sin(self.timer * 0.15) * 10)
+        tri_pts = [
+            (cx,      tip_y + 30),
+            (cx - 12, tip_y),
+            (cx + 12, tip_y),
+        ]
+        tri_alpha = min(255, alpha + 60)
+        ts = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        pygame.draw.polygon(ts, (255, 160, 0, tri_alpha), tri_pts)
+        surface.blit(ts, (0, 0))
 
 
 class LevelUpBanner:
@@ -352,6 +482,14 @@ def spawn_yellow_enemy():
     rect = pygame.Rect(x, -ENEMY_H, ENEMY_W, ENEMY_H)
     return [rect, 4, "yellow", "fall", [0, 0], 0]
 
+def spawn_purple_enemy():
+    """보라색 적: 먹으면 폭발해서 체력 -1, 점수 없음"""
+    x = random.randint(0, WIDTH - ENEMY_W)
+    speed = random.randint(3, 6)
+    rect = pygame.Rect(x, -ENEMY_H, ENEMY_W, ENEMY_H)
+    return [rect, speed, "purple", "fall", [0, 0], 0]
+
+
 def draw_dashed_line(surface, color, start_pos, end_pos, dash_length=10):
     x1, y1 = start_pos
     x2, y2 = end_pos
@@ -373,7 +511,6 @@ def draw_hud(surface, score, last_gain, level_cfg, lives, eat_cooldown, player_r
         gain_surf = font_small.render(f"+{last_gain}", True, (255, 200, 80))
         surface.blit(gain_surf, (score_x + score_base.get_width() + 6, 14))
 
-    # 하트는 오른쪽에서 살짝 왼쪽으로 이동
     lives_text = font.render(f"{'♥ ' * lives}", True, RED)
     surface.blit(lives_text, (WIDTH - lives_text.get_width() - 50, 10))
 
@@ -400,7 +537,7 @@ def draw_hud(surface, score, last_gain, level_cfg, lives, eat_cooldown, player_r
         pulse = int(math.sin(pygame.time.get_ticks() * 0.01) * 4)
         pygame.draw.circle(surface, (80, 220, 255), (cx, cy), RING_R + 8 + pulse, 2)
 
-    # ── 허기 게이지 ─────────────────────────────
+    # ── 허기 게이지
     bar_w = 22
     bar_h = 360
     bar_x = WIDTH - 34
@@ -408,7 +545,6 @@ def draw_hud(surface, score, last_gain, level_cfg, lives, eat_cooldown, player_r
 
     hunger_ratio = max(0.0, min(1.0, hunger / HUNGER_MAX))
 
-    # 비율에 따라 색상 변화
     if hunger_ratio > 0.6:
         hunger_color = (80, 220, 120)
     elif hunger_ratio > 0.3:
@@ -416,22 +552,18 @@ def draw_hud(surface, score, last_gain, level_cfg, lives, eat_cooldown, player_r
     else:
         hunger_color = (255, 90, 90)
 
-    # 라벨
     hunger_label = font_small.render("허기", True, WHITE)
     surface.blit(hunger_label, (bar_x - hunger_label.get_width() // 2 + bar_w // 2, bar_y - 30))
 
-    # 바 배경
     pygame.draw.rect(surface, (70, 70, 70), (bar_x, bar_y, bar_w, bar_h), border_radius=8)
     pygame.draw.rect(surface, WHITE, (bar_x, bar_y, bar_w, bar_h), 2, border_radius=8)
 
-    # 채워진 양 (아래에서 위로)
     fill_h = int(bar_h * hunger_ratio)
     if fill_h > 0:
         fill_rect = pygame.Rect(bar_x + 3, bar_y + bar_h - fill_h + 3, bar_w - 6, fill_h - 6)
         if fill_rect.height > 0:
             pygame.draw.rect(surface, hunger_color, fill_rect, border_radius=6)
 
-    # 위험 상태일 때 깜빡임
     if hunger_ratio <= 0.2 and (pygame.time.get_ticks() // 180) % 2 == 0:
         warning = font_small.render("EMPTY", True, RED)
         surface.blit(warning, (bar_x - warning.get_width() - 8, bar_y + bar_h - 20))
@@ -469,11 +601,16 @@ def main():
     score_popups     = []
     eat_rings        = []
     flash_bursts     = []
+    purple_explosion_particles = []
 
     enemies      = []
     items        = []
     item_eaten   = {}
     item_spawn_timer = 0
+
+    # 주황색 경보 기둥과 대기 중인 낙하 적
+    orange_pillars   = []   # OrangeWarningPillar 인스턴스들
+    orange_pending   = []   # (pillar_x) → 기둥이 완료되면 실제 enemy 생성
 
     score = 0
     last_gain = 0
@@ -494,6 +631,14 @@ def main():
 
     EAT_RANGE      = 80
     EAT_PULL_TICKS = 18
+
+    # 주황색 적 스폰 타이머 (90~180프레임마다 하나씩)
+    orange_spawn_timer = 0
+    ORANGE_SPAWN_INTERVAL = random.randint(300, 480)
+
+    # 보라색 적 스폰 확률 (적 스폰 시 15%)
+    PURPLE_SPAWN_CHANCE = 0.15
+    ORANGE_SPAWN_CHANCE = 0.10
 
     while True:
         dt = clock.tick(FPS)
@@ -542,32 +687,54 @@ def main():
             frame_index = (frame_index + 1) % len(current_frames)
         frame_index = frame_index % len(current_frames)
 
+        # 노란색 ↔ 주황색은 화면에 동시에 존재하지 않음
+        yellow_on_screen = any(e[2] == "yellow" for e in enemies)
+        orange_on_screen = len(orange_pillars) > 0 or any(e[2] == "orange" for e in enemies)
+
+        # 레벨별 적 해금
+        yellow_unlocked = level_idx >= 2   # Lv.3 (인덱스 2)부터
+        special_unlocked = level_idx >= 4  # Lv.5 (인덱스 4)부터 주황/보라
+
         # ── 적 스폰 ──────────────────────────────────────
         spawn_timer += 1
         if spawn_timer >= level_cfg["spawn"]:
             spawn_timer = 0
-            if random.random() < 0.2:
+            roll = random.random()
+            if special_unlocked and roll < ORANGE_SPAWN_CHANCE and not orange_on_screen and not yellow_on_screen:
+                orange_pillars.append(OrangeWarningPillar(player))
+            elif special_unlocked and roll < ORANGE_SPAWN_CHANCE + PURPLE_SPAWN_CHANCE:
+                enemies.append(spawn_purple_enemy())
+            elif yellow_unlocked and roll < ORANGE_SPAWN_CHANCE + PURPLE_SPAWN_CHANCE + 0.2 and not orange_on_screen:
                 enemies.append(spawn_yellow_enemy())
             else:
                 enemies.append(spawn_enemy(level_cfg))
 
-        # ── 아이템 스폰 (12초마다, 체력 최대 시 하트 제외) ──
+        # ── 주황색 경보 기둥 업데이트 ─────────────────────
+        new_pillars = []
+        for pillar in orange_pillars:
+            if pillar.update():
+                new_pillars.append(pillar)
+            else:
+                # 카운트 완료 → 확정된 X에서 speed=28 초고속 낙하
+                x = pillar.final_x
+                rect = pygame.Rect(x - ENEMY_W // 2, -ENEMY_H, ENEMY_W, ENEMY_H)
+                enemies.append([rect, 28, "orange", "dash", [0, 1], 0])
+        orange_pillars = new_pillars
+
+        # ── 아이템 스폰 ──────────────────────────────────
         item_spawn_timer += 1
         if item_spawn_timer >= ITEM_SPAWN_INTERVAL:
             item_spawn_timer = 0
 
             if lives >= MAX_LIVES:
-                # 체력 최대일 때: 낮은 확률로만 swirl 등장
                 kind = "swirl" if random.random() < 0.4 else None
             else:
-                # 일반 상태: heart 많고 swirl 적게
                 kind = "heart" if random.random() < 0.8 else "swirl"
 
-            # kind가 None이면 생성 안 함
             if kind:
                 items.append(Item(kind))
 
-        # ── 아이템 업데이트 & 먹기 스킬 처리 ────────────
+        # ── 아이템 업데이트 & 먹기 처리 ─────────────────
         new_items = []
         for item in items:
             iid = id(item)
@@ -594,7 +761,7 @@ def main():
                             FlashBurst(player.centerx, player.centery, (255, 100, 140)))
                         score_popups.append(
                             ScorePopup(item.x, item.y - 10, "♥ +1", (255, 100, 140)))
-                    else:  # swirl
+                    else:
                         eat_boost_timer = FPS * 5
                         eat_active = max(eat_active, 1)
                         for _ in range(3):
@@ -629,10 +796,15 @@ def main():
                 if dist <= EAT_RANGE:
                     if eid not in being_eaten:
                         being_eaten[eid] = 0
+                        particle_color = (255, 100, 180)
+                        if e[2] == "purple":
+                            particle_color = (200, 80, 255)
+                        elif e[2] == "orange":
+                            particle_color = (255, 160, 40)
                         for _ in range(8):
                             absorb_particles.append(
                                 AbsorbParticle(rect.centerx, rect.centery,
-                                               player, (255, 100, 180)))
+                                               player, particle_color))
 
             if eid in being_eaten:
                 being_eaten[eid] += 1
@@ -646,23 +818,66 @@ def main():
                 if being_eaten[eid] >= EAT_PULL_TICKS or \
                    math.hypot(rect.centerx - player.centerx,
                                rect.centery - player.centery) < 20:
-                    is_red = e[2] == "red"
-                    gain = 2 if is_red else 5
-                    score += gain
-                    last_gain = gain
-                    last_gain_timer = 90
 
-                    hunger_gain = HUNGER_GAIN_RED if is_red else HUNGER_GAIN_YELLOW
-                    hunger = min(HUNGER_MAX, hunger + hunger_gain)
+                    color_type = e[2]
 
-                    flash_bursts.append(FlashBurst(player.centerx, player.centery, (255, 100, 180)))
-                    score_popups.append(ScorePopup(rect.centerx, rect.centery - 10,
-                                                   f"+{gain}",
-                                                   RED if is_red else YELLOW))
+                    if color_type == "purple":
+                        # ★ 보라색: 폭발 → 체력 -1, 점수 없음
+                        lives -= 1
+                        invincible = max(invincible, 90)
+                        shake_timer = 20
+                        shake_strength = 10
+                        # 폭발 파티클 다량 생성
+                        for _ in range(25):
+                            purple_explosion_particles.append(
+                                PurpleExplosionParticle(player.centerx, player.centery))
+                        flash_bursts.append(
+                            FlashBurst(player.centerx, player.centery, (200, 80, 255)))
+                        score_popups.append(
+                            ScorePopup(rect.centerx, rect.centery - 10,
+                                       "BOOM! ♥-1", (200, 80, 255)))
+                        hunger = min(HUNGER_MAX, hunger + HUNGER_GAIN_PURPLE)
+                        if lives <= 0:
+                            del being_eaten[eid]
+                            if game_over_screen(score): main()
+                            return
+
+                    elif color_type == "orange":
+                        # ★ 주황색: 먹기 쿨타임 초기화, 점수 +10
+                        eat_cooldown = 0
+                        gain = 10
+                        score += gain
+                        last_gain = gain
+                        last_gain_timer = 90
+                        hunger = min(HUNGER_MAX, hunger + HUNGER_GAIN_ORANGE)
+                        flash_bursts.append(
+                            FlashBurst(player.centerx, player.centery, (255, 160, 40)))
+                        score_popups.append(
+                            ScorePopup(rect.centerx, rect.centery - 10,
+                                       f"+{gain} COOLDOWN!", (255, 160, 40)))
+
+                    else:
+                        is_red = color_type == "red"
+                        gain = 2 if is_red else 5
+                        score += gain
+                        last_gain = gain
+                        last_gain_timer = 90
+                        hunger_gain = HUNGER_GAIN_RED if is_red else HUNGER_GAIN_YELLOW
+                        hunger = min(HUNGER_MAX, hunger + hunger_gain)
+                        flash_bursts.append(
+                            FlashBurst(player.centerx, player.centery, (255, 100, 180)))
+                        score_popups.append(
+                            ScorePopup(rect.centerx, rect.centery - 10,
+                                       f"+{gain}",
+                                       RED if is_red else YELLOW))
+
                     del being_eaten[eid]
                     continue
             else:
                 if e[2] == "red":
+                    rect.y += e[1]
+                elif e[2] == "purple":
+                    # 보라색: 천천히 낙하
                     rect.y += e[1]
                 elif e[2] == "yellow":
                     if e[3] == "fall":
@@ -680,6 +895,9 @@ def main():
                     elif e[3] == "dash":
                         rect.x += int(e[4][0] * 10)
                         rect.y += int(e[4][1] * 10)
+                elif e[2] == "orange":
+                    # 주황색: 직선 초고속 낙하 (아래로만)
+                    rect.y += e[1]
 
             if rect.top < HEIGHT:
                 survived.append(e)
@@ -696,20 +914,54 @@ def main():
             if eid in being_eaten:
                 new_enemies.append(e); continue
             if invincible <= 0 and player.colliderect(rect):
-                lives -= 1
-                invincible = 90
-                shake_timer = 18
-                shake_strength = 12
-                being_eaten.clear(); enemies.clear()
+                if e[2] == "purple":
+                    # 보라색 충돌: 폭발 즉시
+                    lives -= 1
+                    invincible = 90
+                    shake_timer = 20
+                    shake_strength = 10
+                    for _ in range(25):
+                        purple_explosion_particles.append(
+                            PurpleExplosionParticle(player.centerx, player.centery))
+                    flash_bursts.append(
+                        FlashBurst(player.centerx, player.centery, (200, 80, 255)))
+                    score_popups.append(
+                        ScorePopup(rect.centerx, rect.centery - 10,
+                                   "BOOM! ♥-1", (200, 80, 255)))
+                    being_eaten.clear()
+                    enemies.clear()
+                    if lives <= 0:
+                        if game_over_screen(score): main()
+                        return
+                    continue
+                else:
+                    # 주황색 충돌: 체력 2 감소
+                    if e[2] == "orange":
+                        lives -= 2
+                        shake_timer = 22
+                        shake_strength = 14
+                        score_popups.append(
+                            ScorePopup(rect.centerx, rect.centery - 10,
+                                       "♥♥ -2", (255, 140, 0)))
+                    else:
+                        lives -= 1
+                        shake_timer = 18
+                        shake_strength = 12
+                    invincible = 90
+                    being_eaten.clear(); enemies.clear()
 
-                if lives <= 0:
-                    if game_over_screen(score): main()
-                    return
-                continue
+                    if lives <= 0:
+                        if game_over_screen(score): main()
+                        return
+                    continue
             new_enemies.append(e)
         enemies = new_enemies
 
-        new_level_idx = min(score // 20, len(LEVELS) - 1)
+        new_level_idx = 0
+        for i, threshold in enumerate(LEVEL_SCORE_THRESHOLDS):
+            if score >= threshold:
+                new_level_idx = i
+        new_level_idx = min(new_level_idx, len(LEVELS) - 1)
         if new_level_idx > level_idx:
             level_up_banners.append(LevelUpBanner(LEVELS[new_level_idx]['label']))
         level_idx = new_level_idx
@@ -728,16 +980,21 @@ def main():
         if shake_timer > 0:
             shake_timer -= 1
 
-        level_up_banners    = [b for b in level_up_banners    if b.update()]
-        absorb_particles    = [p for p in absorb_particles    if p.update()]
-        score_popups        = [p for p in score_popups        if p.update()]
-        eat_rings           = [r for r in eat_rings           if r.update()]
-        flash_bursts        = [f for f in flash_bursts        if f.update()]
+        level_up_banners          = [b for b in level_up_banners          if b.update()]
+        absorb_particles          = [p for p in absorb_particles          if p.update()]
+        score_popups              = [p for p in score_popups              if p.update()]
+        eat_rings                 = [r for r in eat_rings                 if r.update()]
+        flash_bursts              = [f for f in flash_bursts              if f.update()]
+        purple_explosion_particles = [p for p in purple_explosion_particles if p.update()]
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 그리기
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         game_surface.fill(GRAY)
+
+        # 주황색 경보 기둥 (배경 레이어에)
+        for pillar in orange_pillars:
+            pillar.draw(game_surface)
 
         for ring in eat_rings:
             ring.draw(game_surface)
@@ -766,27 +1023,89 @@ def main():
         for e in enemies:
             eid  = id(e[0])
             rect = e[0]
+            color_type = e[2]
+
+            if color_type == "purple":
+                base_color = PURPLE
+            elif color_type == "orange":
+                base_color = ORANGE
+            elif color_type == "red":
+                base_color = RED
+            else:
+                base_color = YELLOW
+
             if eid in being_eaten:
                 progress = being_eaten[eid] / EAT_PULL_TICKS
                 scale    = max(0.2, 1.0 - progress * 0.8)
                 w = max(1, int(rect.width  * scale))
                 h = max(1, int(rect.height * scale))
-                color = RED if e[2] == "red" else YELLOW
-                pygame.draw.rect(game_surface, color,
-                                 pygame.Rect(rect.centerx - w//2,
-                                             rect.centery - h//2, w, h))
-            elif e[2] == "red":
-                pygame.draw.rect(game_surface, RED, rect)
-            elif e[2] == "yellow":
-                if e[3] == "warn":
-                    if (e[5] // 5) % 2 == 0:
-                        pygame.draw.rect(game_surface, YELLOW, rect)
-                    draw_dashed_line(game_surface, YELLOW, rect.center,
-                                     player.center, dash_length=8)
+
+                if color_type == "purple":
+                    # 보라색: 육각형 느낌으로 (원으로 표현)
+                    r_shrink = max(1, int(min(w, h) // 2))
+                    ps = pygame.Surface((r_shrink*2+2, r_shrink*2+2), pygame.SRCALPHA)
+                    # 경고 효과: 깜빡임
+                    pulse_alpha = int(200 + 55 * math.sin(pygame.time.get_ticks() * 0.03))
+                    pygame.draw.circle(ps, (*PURPLE, pulse_alpha),
+                                       (r_shrink+1, r_shrink+1), r_shrink)
+                    game_surface.blit(ps, (rect.centerx - r_shrink - 1,
+                                           rect.centery - r_shrink - 1))
                 else:
-                    pygame.draw.rect(game_surface, YELLOW, rect)
+                    pygame.draw.rect(game_surface, base_color,
+                                     pygame.Rect(rect.centerx - w//2,
+                                                 rect.centery - h//2, w, h))
+            else:
+                if color_type == "purple":
+                    # 보라색: 원형 + 테두리로 위협적으로 표현
+                    r = ENEMY_W // 2
+                    tick_v = pygame.time.get_ticks()
+                    pulse = int(3 * math.sin(tick_v * 0.008))
+                    pygame.draw.circle(game_surface, PURPLE,
+                                       rect.center, r + pulse)
+                    pygame.draw.circle(game_surface, (220, 150, 255),
+                                       rect.center, r + pulse, 2)
+                    # 가운데 해골 대신 X 표시
+                    cx2, cy2 = rect.center
+                    sz = 6
+                    pygame.draw.line(game_surface, (255, 220, 255),
+                                     (cx2-sz, cy2-sz), (cx2+sz, cy2+sz), 2)
+                    pygame.draw.line(game_surface, (255, 220, 255),
+                                     (cx2+sz, cy2-sz), (cx2-sz, cy2+sz), 2)
+
+                elif color_type == "orange":
+                    # 주황색: 빠른 낙하 - 불꽃 느낌으로
+                    r = ENEMY_W // 2
+                    # 속도선 (trail)
+                    trail_len = 30
+                    trail_s = pygame.Surface((ENEMY_W + 4, trail_len), pygame.SRCALPHA)
+                    for t in range(trail_len):
+                        alpha_t = int(150 * (1 - t / trail_len))
+                        w_t = max(1, int((ENEMY_W - 4) * (1 - t / trail_len)))
+                        pygame.draw.rect(trail_s, (255, 140 + t*2, 0, alpha_t),
+                                         (ENEMY_W // 2 - w_t // 2 + 2, t, w_t, 2))
+                    game_surface.blit(trail_s, (rect.left - 2, rect.top - trail_len))
+                    # 본체
+                    pygame.draw.circle(game_surface, ORANGE, rect.center, r)
+                    pygame.draw.circle(game_surface, (255, 220, 80), rect.center, r, 2)
+                    # 번개 표시
+                    cx2, cy2 = rect.center
+                    bolt = [(cx2+2, cy2-8), (cx2-2, cy2-1), (cx2+3, cy2-1), (cx2-3, cy2+8)]
+                    pygame.draw.lines(game_surface, (255, 255, 180), False, bolt, 2)
+
+                elif color_type == "yellow":
+                    if e[3] == "warn":
+                        if (e[5] // 5) % 2 == 0:
+                            pygame.draw.rect(game_surface, YELLOW, rect)
+                        draw_dashed_line(game_surface, YELLOW, rect.center,
+                                         player.center, dash_length=8)
+                    else:
+                        pygame.draw.rect(game_surface, YELLOW, rect)
+                else:
+                    pygame.draw.rect(game_surface, RED, rect)
 
         for p in absorb_particles:
+            p.draw(game_surface)
+        for p in purple_explosion_particles:
             p.draw(game_surface)
         for f in flash_bursts:
             f.draw(game_surface)
@@ -839,12 +1158,14 @@ def title_screen():
             screen.blit(r_surf, (WIDTH // 2 - r_surf.get_width() // 2, 290))
 
         guides = [
-            ("←  →", "방향키로 이동"),
-            ("SPACE", "먹기"),
+            ("←  →",  "방향키로 이동"),
+            ("SPACE",  "먹기"),
+            ("🟣 보라색", "먹으면 폭발! ♥-1"),
+            ("🟠 주황색", "3초 후 낙하! 먹으면 쿨타임 초기화"),
         ]
-        base_y = 370
+        base_y = 360
         for i, (key_txt, desc_txt) in enumerate(guides):
-            y        = base_y + i * 48
+            y  = base_y + i * 44
             ks = font_guide.render(key_txt,  True, PINK)
             ss = font_guide.render("  :  ",  True, DIM)
             ds = font_guide.render(desc_txt, True, WHITE)
@@ -858,3 +1179,4 @@ def title_screen():
 
 title_screen()
 main()
+
