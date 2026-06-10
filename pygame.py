@@ -1,1188 +1,1043 @@
-import pygame
-import random
-import sys
-import math
-import os
+"""
+⚔️  SPEAR DUNGEON  ⚔️
+픽셀 던전풍 사이드뷰 로그라이크 액션 게임
 
-pygame.init()
-pygame.mixer.init()
+조작:
+  WASD         - 이동
+  좌클릭        - 찌르기 (마우스 방향, 풍압 이펙트)
+  우클릭 홀드   - 창 돌리기 (0.5초 → 패링 판정)
+                  패링 성공 후 좌클릭 → 카운터 공격
+  E키           - 창 투척 (적에게 박힘)
+  ESC          - 종료
+"""
 
-# 🔊 사운드 로드
-SOUND_EAT_ENEMY = pygame.mixer.Sound("assets/sounds/eatenemy.wav")
-SOUND_LEVELUP   = pygame.mixer.Sound("assets/sounds/levelup.wav")
-SOUND_EAT_HP    = pygame.mixer.Sound("assets/sounds/eathp.wav")
-SOUND_HIT       = pygame.mixer.Sound("assets/sounds/auch.wav")
+import pygame, math, random, sys
 
-SOUND_HIT.set_volume(0.3)
+# ──────────────────────────────────────────────
+#  상수
+# ──────────────────────────────────────────────
+SCREEN_W, SCREEN_H = 900, 600
+FPS       = 60
+TILE      = 40
+ROOM_COLS = 20
+ROOM_ROWS = 13
+ROOM_W    = ROOM_COLS * TILE
+ROOM_H    = ROOM_ROWS * TILE
 
-# 🔊 배경음
-BGM_TITLE = "assets/sounds/titletheme.wav"
-BGM_GAME  = "assets/sounds/starttheme.wav"
-BGM_LV10  = "assets/sounds/10level.wav"
+# 팔레트
+C_BG        = (18,  14,  26)
+C_FLOOR     = (52,  40,  60)
+C_FLOOR2    = (44,  34,  52)
+C_WALL      = (28,  22,  42)
+C_WALL_TOP  = (72,  58,  90)
+C_PLAYER    = (100, 200, 240)
+C_PLAYER_SH = (60,  140, 180)
+C_SPEAR     = (240, 220, 100)
+C_ENEMY     = (220, 80,  80)
+C_ENEMY_SH  = (160, 40,  40)
+C_BOSS      = (200, 60,  200)
+C_BOSS_SH   = (130, 20,  130)
+C_HP_RED    = (220, 50,  50)
+C_HP_GREEN  = (80,  200, 100)
+C_HP_BACK   = (40,  20,  20)
+C_DOOR      = (180, 140, 60)
+C_DOOR_OPEN = (240, 200, 100)
+C_TIMER_OK  = (80,  220, 120)
+C_TIMER_WARN= (240, 180, 40)
+C_TIMER_CRIT= (240, 60,  60)
+C_GOLD      = (255, 210, 50)
+C_WHITE     = (255, 255, 255)
+C_DARK      = (0,   0,   0)
+C_SHADOW    = (10,  8,   16)
+C_PARRY     = (120, 220, 255)
+C_COUNTER   = (255, 120, 30)
+C_WIND      = (180, 230, 255)
 
-def get_korean_font(size):
-    base_path = os.path.dirname(__file__)
-    font_path = os.path.join(base_path, "assets", "fonts", "NotoSansKR-Bold.ttf")
-    return pygame.font.Font(font_path, size)
+# 게임 수치
+TIME_LIMIT       = 60
+PLAYER_SPEED     = 4
+PLAYER_HP        = 100
 
-def draw_outlined_text(surface, font, text, color, outline_color, x, y, outline_width=3):
-    """두번째 이미지처럼 두꺼운 윤곽선이 있는 텍스트 렌더링"""
-    # 윤곽선 (여러 방향으로 오프셋 렌더링)
-    for dx in range(-outline_width, outline_width + 1):
-        for dy in range(-outline_width, outline_width + 1):
-            if dx != 0 or dy != 0:
-                outline_surf = font.render(text, True, outline_color)
-                surface.blit(outline_surf, (x + dx, y + dy))
-    # 메인 텍스트
-    text_surf = font.render(text, True, color)
-    surface.blit(text_surf, (x, y))
-    return text_surf
+# 찌르기
+STAB_DMG         = 35
+STAB_RANGE       = 90      # px
+STAB_COOLDOWN    = 18      # 프레임
+STAB_ANIM_FRAMES = 10
 
-def draw_outlined_text_centered(surface, font, text, color, outline_color, cx, y, outline_width=3):
-    """중앙 정렬 윤곽선 텍스트"""
-    text_surf = font.render(text, True, color)
-    x = cx - text_surf.get_width() // 2
-    draw_outlined_text(surface, font, text, color, outline_color, x, y, outline_width)
-    return text_surf
+# 패링/카운터
+PARRY_SPIN_TIME  = 0.5     # 초 (이 시간 동안 돌리면 패링 준비)
+PARRY_WINDOW     = 45      # 패링 후 카운터 가능 프레임
+COUNTER_DMG      = 80
+COUNTER_RANGE    = 110
 
-WIDTH, HEIGHT = 800, 600
-FPS = 60
+# 투척
+THROW_SPEED      = 13
+THROW_RANGE      = 500
+THROW_DMG        = 45
+THROW_COOLDOWN   = 25
 
-WHITE  = (255, 255, 255)
-BLACK  = (0, 0, 0)
-RED    = (220, 50, 50)
-YELLOW = (240, 200, 0)
-GRAY   = (40, 40, 40)
-CYAN   = (0, 255, 255)
-PURPLE = (160, 60, 220)
-ORANGE = (255, 140, 0)
-
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Hungry Slime")
-clock = pygame.time.Clock()
-
-font = get_korean_font(36)
-font_big = get_korean_font(72)
-font_small = get_korean_font(22)
-
-# Lv.1~10 설정
-LEVELS = [
-    {"min_speed": 3, "max_speed": 5,  "spawn": 55, "label": "Lv.1"},
-    {"min_speed": 4, "max_speed": 6,  "spawn": 50, "label": "Lv.2"},
-    {"min_speed": 4, "max_speed": 7,  "spawn": 45, "label": "Lv.3"},
-    {"min_speed": 3, "max_speed": 6,  "spawn": 40, "label": "Lv.4"},
-    {"min_speed": 4, "max_speed": 7,  "spawn": 34, "label": "Lv.5"},
-    {"min_speed": 5, "max_speed": 8,  "spawn": 28, "label": "Lv.6"},
-    {"min_speed": 5, "max_speed": 10, "spawn": 23, "label": "Lv.7"},
-    {"min_speed": 7, "max_speed": 12, "spawn": 18, "label": "Lv.8"},
-    {"min_speed": 8, "max_speed": 14, "spawn": 14, "label": "Lv.9"},
-    {"min_speed": 9, "max_speed": 16, "spawn": 10, "label": "Lv.10"},
+ENEMY_TYPES = [
+    {"name":"슬라임", "hp":50,  "speed":1.5,"dmg":8, "size":18,
+     "color":C_ENEMY,        "shadow":C_ENEMY_SH,    "score":10},
+    {"name":"해골",   "hp":80,  "speed":2.2,"dmg":12,"size":16,
+     "color":(180,180,180),  "shadow":(100,100,100), "score":20},
+    {"name":"오우거", "hp":140, "speed":1.2,"dmg":20,"size":26,
+     "color":(100,180,80),   "shadow":(60,110,40),   "score":40},
 ]
+BOSS_DATA = {"name":"암흑 군주","hp":400,"speed":1.8,"dmg":25,"size":36,
+             "color":C_BOSS,"shadow":C_BOSS_SH,"score":200}
 
-LEVEL_SCORE_THRESHOLDS = [0, 15, 35, 60, 90, 130, 180, 240, 320, 420]
+# ──────────────────────────────────────────────
+#  유틸
+# ──────────────────────────────────────────────
+def dist(ax,ay,bx,by): return math.hypot(ax-bx, ay-by)
 
-PLAYER_W, PLAYER_H = 50, 50
-ENEMY_W, ENEMY_H = 30, 30
+def normalize(dx,dy):
+    d = math.hypot(dx,dy)
+    return (0,0) if d==0 else (dx/d, dy/d)
 
-FRAME_W, FRAME_H = 24, 24
-COLS = 3
+def pixel_font(size):
+    return pygame.font.SysFont("monospace", size, bold=True)
 
-IDLE_FRAME_DELAY = 180
-WALK_FRAME_DELAY = 80
+def draw_text_shadow(surf,text,font,color,x,y,shadow=C_SHADOW):
+    surf.blit(font.render(text,False,shadow),(x+2,y+2))
+    surf.blit(font.render(text,False,color),(x,y))
 
-player_sheet = pygame.image.load("assets/images/Slime.PNG").convert_alpha()
+def draw_bar(surf,x,y,w,h,val,mx,c_fill,c_back=C_HP_BACK):
+    pygame.draw.rect(surf,c_back,(x,y,w,h))
+    fill = int(w*max(0,val)/max(1,mx))
+    if fill>0: pygame.draw.rect(surf,c_fill,(x,y,fill,h))
+    pygame.draw.rect(surf,C_WHITE,(x,y,w,h),1)
 
-all_frames = []
-for i in range(9):
-    row, col = divmod(i, COLS)
-    rect = pygame.Rect(col * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H)
-    all_frames.append(player_sheet.subsurface(rect))
+# ──────────────────────────────────────────────
+#  파티클
+# ──────────────────────────────────────────────
+class Particle:
+    def __init__(self,x,y,color,vx,vy,life=30,size=4):
+        self.x,self.y=x,y
+        self.color=color; self.vx,self.vy=vx,vy
+        self.life=self.max_life=life; self.size=size
+    def update(self):
+        self.x+=self.vx; self.y+=self.vy
+        self.vy+=0.12; self.life-=1
+    def draw(self,surf,cx,cy):
+        a=self.life/self.max_life
+        r=max(1,int(self.size*a))
+        bx,by=int(self.x-cx),int(self.y-cy)
+        c=tuple(int(v*a) for v in self.color)
+        pygame.draw.rect(surf,c,(bx-r//2,by-r//2,r,r))
 
-idle_frames = all_frames[0:3]
-walk_frames = all_frames[3:6]
+def spawn_particles(particles,x,y,color,count=10):
+    for _ in range(count):
+        a=random.uniform(0,math.pi*2)
+        s=random.uniform(1,4)
+        particles.append(Particle(x,y,color,
+            math.cos(a)*s, math.sin(a)*s-1,
+            life=random.randint(20,40),
+            size=random.randint(3,7)))
 
-# 배경 이미지 로드
-TITLE_BG = pygame.image.load("assets/images/CandyWorld.PNG").convert()
-TITLE_BG = pygame.transform.scale(TITLE_BG, (WIDTH, HEIGHT))
+# 풍압 이펙트 전용 파티클 (가로로 길게 퍼지는 선)
+class WindParticle:
+    def __init__(self,x,y,angle):
+        self.x,self.y=float(x),float(y)
+        spread = random.uniform(-0.35,0.35)
+        base_spd = random.uniform(5,10)
+        self.vx = math.cos(angle+spread)*base_spd
+        self.vy = math.sin(angle+spread)*base_spd
+        self.life = self.max_life = random.randint(8,16)
+        self.length = random.randint(10,22)
+        self.angle = angle+spread
+    def update(self):
+        self.x+=self.vx; self.y+=self.vy
+        self.vx*=0.85;   self.vy*=0.85
+        self.life-=1
+    def draw(self,surf,cx,cy):
+        a=self.life/self.max_life
+        alpha_c = tuple(int(v*a) for v in C_WIND)
+        bx,by=int(self.x-cx),int(self.y-cy)
+        ex=bx+int(math.cos(self.angle)*self.length*a)
+        ey=by+int(math.sin(self.angle)*self.length*a)
+        if alpha_c[0]>0:
+            pygame.draw.line(surf,alpha_c,(bx,by),(ex,ey),2)
 
-ITEM_SPEED = 3
-ITEM_R     = 20
-ITEM_SPAWN_INTERVAL = 720
-MAX_LIVES = 5
-HUNGER_MAX = 100.0
+# ──────────────────────────────────────────────
+#  박힌 창 (ThrownSpear가 적에게 닿으면 생성)
+# ──────────────────────────────────────────────
+class StuckSpear:
+    """적 몸에 박힌 창 — 적과 함께 움직이며 렌더링"""
+    def __init__(self, offset_x, offset_y, angle):
+        self.ox = offset_x   # 적 cx 기준 오프셋
+        self.oy = offset_y
+        self.angle = angle
 
-HUNGER_DRAIN_BY_LEVEL = [
-    0.020, 0.030, 0.040, 0.052, 0.065,
-    0.080, 0.096, 0.114, 0.134, 0.158,
-]
+    def draw(self, surf, ex, ey, cam_x, cam_y):
+        sx = int(ex - cam_x)
+        sy = int(ey - cam_y)
+        length = 26
+        tip_x = sx + int(math.cos(self.angle)*length)
+        tip_y = sy + int(math.sin(self.angle)*length)
+        tail_x = sx - int(math.cos(self.angle)*18)
+        tail_y = sy - int(math.sin(self.angle)*18)
+        pygame.draw.line(surf,(160,120,60),(tail_x,tail_y),(sx,sy),3)
+        pygame.draw.line(surf,C_SPEAR,(sx,sy),(tip_x,tip_y),3)
 
-HUNGER_GAIN_RED = 8
-HUNGER_GAIN_YELLOW = 18
-HUNGER_GAIN_PURPLE = 0
-HUNGER_GAIN_ORANGE = 12
+# ──────────────────────────────────────────────
+#  투척 창
+# ──────────────────────────────────────────────
+class ThrownSpear:
+    def __init__(self,x,y,angle):
+        self.x,self.y=float(x),float(y)
+        self.angle=angle
+        self.vx=math.cos(angle)*THROW_SPEED
+        self.vy=math.sin(angle)*THROW_SPEED
+        self.traveled=0
+        self.alive=True
+        self.stuck_to=None   # 박힌 적 객체
+    @property
+    def cx(self): return self.x
+    @property
+    def cy(self): return self.y
 
-class Item:
-    def __init__(self, kind):
-        self.kind   = kind
-        self.x      = float(random.randint(ITEM_R, WIDTH - ITEM_R))
-        self.y      = float(-ITEM_R * 2)
-        self.speed  = ITEM_SPEED
-        self.r      = ITEM_R
-        self.tick   = 0
-        self.being_eaten   = False
-        self.eat_progress  = 0
+    def update(self, walls, enemies, particles, player):
+        if self.stuck_to is not None:
+            # 적이 죽으면 창도 소멸
+            if not self.stuck_to.alive:
+                self.alive = False
+            return
+        self.x+=self.vx; self.y+=self.vy
+        self.traveled+=THROW_SPEED
+        if self.traveled>THROW_RANGE:
+            self.alive=False; return
+        r=pygame.Rect(int(self.x)-4,int(self.y)-4,8,8)
+        for w in walls:
+            if r.colliderect(w):
+                self.alive=False; return
+        for e in enemies:
+            if e.alive and dist(self.x,self.y,e.cx,e.cy)<e.size+6:
+                e.take_damage(THROW_DMG)
+                spawn_particles(particles,e.cx,e.cy,e.color,14)
+                player.score += e.score//3
+                if not e.alive:
+                    player.score += e.score
+                # 적이 살아있으면 박힘
+                if e.alive:
+                    ox = self.x - e.cx
+                    oy = self.y - e.cy
+                    e.stuck_spears.append(StuckSpear(ox,oy,self.angle))
+                    self.alive = False
+                else:
+                    self.alive = False
+                return
 
+    def draw(self,surf,cam_x,cam_y):
+        if self.stuck_to: return
+        sx=int(self.x-cam_x); sy=int(self.y-cam_y)
+        length=26
+        tail_x=sx-int(math.cos(self.angle)*18)
+        tail_y=sy-int(math.sin(self.angle)*18)
+        tip_x =sx+int(math.cos(self.angle)*length)
+        tip_y =sy+int(math.sin(self.angle)*length)
+        pygame.draw.line(surf,(160,120,60),(tail_x,tail_y),(sx,sy),3)
+        pygame.draw.line(surf,C_SPEAR,(sx,sy),(tip_x,tip_y),3)
+
+# ──────────────────────────────────────────────
+#  플레이어
+# ──────────────────────────────────────────────
+# 공격 상태 머신
+ATTACK_NONE    = 0
+ATTACK_STAB    = 1   # 찌르기 진행 중
+ATTACK_SPIN    = 2   # 창 돌리기 (우클릭 홀드)
+ATTACK_PARRIED = 3   # 패링 성공 — 카운터 대기
+ATTACK_COUNTER = 4   # 카운터 공격 진행 중
+
+class Player:
+    def __init__(self,x,y):
+        self.x,self.y=float(x),float(y)
+        self.w,self.h=24,32
+        self.hp=PLAYER_HP; self.max_hp=PLAYER_HP
+        self.facing=1
+        self.invincible=0
+        self.score=0
+        self.bob=0
+
+        # ── 공격 상태 ──
+        self.attack_state = ATTACK_NONE
+        self.stab_frame   = 0      # 찌르기 애니메이션
+        self.stab_angle   = 0
+        self.spin_time    = 0.0    # 우클릭 홀드 누적 시간(초)
+        self.parry_frames = 0      # 패링 후 카운터 가능 시간
+        self.counter_frame= 0
+        self.counter_angle= 0
+        self.throw_cooldown=0
+        self.stab_cooldown =0
+
+        # 창 각도 (보유 중일 때 마우스 방향)
+        self.spear_angle  = 0.0
+
+        # 박힌 창이 없으면 1개 보유
+        self.has_spear    = True
+
+        # 강화 카운터 (SPIN 중 피격 시 활성화)
+        self.counter_enhanced = False   # True이면 빨간 강화 카운터
+
+        # 강화 카운터 돌진
+        self.dash_vx      = 0.0   # 돌진 속도 벡터
+        self.dash_vy      = 0.0
+        self.dash_frames  = 0     # 남은 돌진 프레임
+        self.dash_trail   = []    # 잔상 위치 리스트 [(x,y), ...]
+        self.dash_hit_targets=set()
+
+    @property
+    def cx(self): return self.x+self.w/2
+    @property
+    def cy(self): return self.y+self.h/2
+    @property
+    def rect(self): return pygame.Rect(int(self.x),int(self.y),self.w,self.h)
+
+    # ── 매 프레임 갱신 ──
+    def update(self, keys, dt, walls, mx, my, cam_x, cam_y,
+               enemies, particles, thrown_spears,
+               mb_left, mb_right, key_e_pressed, key_r_pressed=False):
+
+        # 마우스 방향 → 창 각도
+        wx=mx+cam_x; wy=my+cam_y
+        self.spear_angle = math.atan2(wy-self.cy, wx-self.cx)
+        if wx > self.cx: self.facing=1
+        elif wx < self.cx: self.facing=-1
+
+        # 이동
+        dx,dy=0,0
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:  dx-=PLAYER_SPEED
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]: dx+=PLAYER_SPEED
+        if keys[pygame.K_w] or keys[pygame.K_UP]:    dy-=PLAYER_SPEED
+        if keys[pygame.K_s] or keys[pygame.K_DOWN]:  dy+=PLAYER_SPEED
+        if dx and dy: dx*=0.707; dy*=0.707
+        if dx: self._move_axis(dx,0,walls)
+        if dy: self._move_axis(0,dy,walls)
+        if dx or dy: self.bob=(self.bob+1)%12
+        else: self.bob=0
+
+        # 쿨다운
+        if self.stab_cooldown>0:  self.stab_cooldown-=1
+        if self.throw_cooldown>0: self.throw_cooldown-=1
+        if self.invincible>0:     self.invincible-=1
+
+        # ── 공격 상태 머신 ──
+        if key_r_pressed and not self.has_spear:
+            self.has_spear=True
+
+        if self.dash_frames>0:
+            self.x += self.dash_vx
+            self.y += self.dash_vy
+            self.dash_frames -= 1
+            self.dash_trail.append((self.x,self.y))
+            self.dash_trail=self.dash_trail[-8:]
+
+        self._update_attack(dt, mb_left, mb_right, key_e_pressed,
+                            mx, my, cam_x, cam_y,
+                            enemies, particles, thrown_spears)
+
+    def _update_attack(self, dt, mb_left, mb_right, key_e,
+                       mx, my, cam_x, cam_y,
+                       enemies, particles, thrown_spears):
+
+        state = self.attack_state
+
+        # ────────────────────────────
+        # NONE 상태: 입력 감지
+        # ────────────────────────────
+        if state == ATTACK_NONE:
+            # E키: 투척
+            if key_e and self.has_spear and self.throw_cooldown==0:
+                wx=mx+cam_x; wy=my+cam_y
+                angle=math.atan2(wy-self.cy, wx-self.cx)
+                thrown_spears.append(ThrownSpear(self.cx,self.cy,angle))
+                self.has_spear=False
+                self.throw_cooldown=THROW_COOLDOWN
+
+            # 좌클릭: 찌르기
+            elif mb_left and self.stab_cooldown==0 and self.has_spear:
+                self.attack_state=ATTACK_STAB
+                self.stab_frame=STAB_ANIM_FRAMES
+                self.stab_angle=self.spear_angle
+                self._do_stab(enemies, particles)
+
+            # 우클릭 홀드: 창 돌리기 시작
+            elif mb_right:
+                self.attack_state=ATTACK_SPIN
+                self.spin_time=0.0
+
+        # ────────────────────────────
+        # STAB 상태
+        # ────────────────────────────
+        elif state == ATTACK_STAB:
+            self.stab_frame-=1
+            if self.stab_frame<=0:
+                self.attack_state=ATTACK_NONE
+                self.stab_cooldown=STAB_COOLDOWN
+
+        # ────────────────────────────
+        # SPIN 상태 (우클릭 홀드)
+        # ────────────────────────────
+        elif state == ATTACK_SPIN:
+            if not mb_right:
+                # 홀드 해제: 그냥 취소
+                self.attack_state=ATTACK_NONE
+                self.spin_time=0.0
+                self.counter_enhanced=False
+            else:
+                self.spin_time+=dt
+                if self.spin_time>=PARRY_SPIN_TIME:
+                    # 0.5초 돌리기 완료 → 패링 대기
+                    self.attack_state=ATTACK_PARRIED
+                    self.parry_frames=PARRY_WINDOW
+                    parry_c = (255,60,60) if self.counter_enhanced else C_PARRY
+                    spawn_particles(particles,self.cx,self.cy,parry_c,20)
+
+        # ────────────────────────────
+        # PARRIED 상태 (카운터 대기)
+        # ────────────────────────────
+        elif state == ATTACK_PARRIED:
+            self.parry_frames-=1
+            if self.parry_frames<=0:
+                self.attack_state=ATTACK_NONE   # 카운터 창 소진
+                self.counter_enhanced=False
+            # 좌클릭: 카운터
+            elif mb_left:
+                enhanced=self.counter_enhanced
+                self.attack_state=ATTACK_COUNTER
+                self.counter_frame=14
+                self.counter_angle=self.spear_angle
+                self._do_counter(enemies, particles)
+                if enhanced:
+                    self.dash_frames=12
+                    self.dash_vx=math.cos(self.counter_angle)*18
+                    self.dash_vy=math.sin(self.counter_angle)*18
+                    self.dash_hit_targets=set()
+                self.counter_enhanced=False
+
+        # ────────────────────────────
+        # COUNTER 상태
+        # ────────────────────────────
+        elif state == ATTACK_COUNTER:
+            if self.dash_frames>0:
+                for e in enemies:
+                    if e.alive and id(e) not in self.dash_hit_targets and dist(self.cx,self.cy,e.cx,e.cy)<e.size+24:
+                        e.take_damage(120)
+                        self.dash_hit_targets.add(id(e))
+            self.counter_frame-=1
+            if self.counter_frame<=0:
+                self.attack_state=ATTACK_NONE
+                self.stab_cooldown=STAB_COOLDOWN//2
+
+    def _do_stab(self, enemies, particles):
+        """찌르기 — 히트 판정 + 풍압 파티클"""
+        angle = self.stab_angle
+        # 풍압 파티클
+        for _ in range(14):
+            particles.append(WindParticle(
+                self.cx + math.cos(angle)*30,
+                self.cy + math.sin(angle)*30,
+                angle))
+        # 히트 판정
+        for e in enemies:
+            if not e.alive: continue
+            ex=e.cx-self.cx; ey=e.cy-self.cy
+            d=math.hypot(ex,ey)
+            if d<STAB_RANGE:
+                # 창 방향과 적 방향 각도 차이
+                ea=math.atan2(ey,ex)
+                diff=abs((ea-angle+math.pi)%(2*math.pi)-math.pi)
+                if diff<0.6:   # 좁은 찌르기 판정 각도
+                    e.take_damage(STAB_DMG)
+                    spawn_particles(particles,e.cx,e.cy,e.color,10)
+
+    def _do_counter(self, enemies, particles):
+        """카운터 — 넓은 범위 + 강한 데미지 + 이펙트
+        counter_enhanced=True이면 빨간 강화 카운터 (데미지/범위 1.8배)"""
+        angle = self.counter_angle
+        dmg   = int(COUNTER_DMG * (1.8 if self.counter_enhanced else 1.0))
+        rng   = int(COUNTER_RANGE * (1.8 if self.counter_enhanced else 1.0))
+        c_col = (255, 40, 40) if self.counter_enhanced else C_COUNTER
+        spawn_particles(particles,self.cx,self.cy,c_col,28 if self.counter_enhanced else 20)
+        wind_count = 30 if self.counter_enhanced else 20
+        for _ in range(wind_count):
+            particles.append(WindParticle(
+                self.cx+math.cos(angle)*40,
+                self.cy+math.sin(angle)*40,
+                angle))
+        for e in enemies:
+            if not e.alive: continue
+            d=dist(self.cx,self.cy,e.cx,e.cy)
+            if d<rng:
+                ea=math.atan2(e.cy-self.cy,e.cx-self.cx)
+                diff=abs((ea-angle+math.pi)%(2*math.pi)-math.pi)
+                arc = 1.1 if self.counter_enhanced else 0.9
+                if diff<arc:
+                    e.take_damage(dmg)
+                    spawn_particles(particles,e.cx,e.cy,c_col,18)
+
+    def take_damage(self, dmg):
+        """패링 중(SPIN/PARRIED)이면 데미지 무효 + 패링 성공 처리"""
+        if self.invincible>0: return False
+        if self.attack_state in (ATTACK_SPIN, ATTACK_PARRIED):
+            # 패링 성공
+            if self.attack_state==ATTACK_SPIN and self.spin_time>=0.15:
+                self.attack_state=ATTACK_PARRIED
+                self.parry_frames=PARRY_WINDOW
+                self.counter_enhanced=True   # ★ SPIN 중 피격 → 강화 카운터
+            return True   # 패링 성공 신호
+        self.hp-=dmg
+        self.invincible=60
+        return False
+
+    def _move_axis(self,dx,dy,walls):
+        self.x+=dx; self.y+=dy
+        r=self.rect
+        for w in walls:
+            if r.colliderect(w):
+                if dx>0: self.x=w.left-self.w
+                if dx<0: self.x=w.right
+                if dy>0: self.y=w.top-self.h
+                if dy<0: self.y=w.bottom
+                r=self.rect
+
+    # ── 렌더링 ──
+    def draw(self, surf, cam_x, cam_y, particles):
+        sx=int(self.x-cam_x); sy=int(self.y-cam_y)
+        bob_y=int(math.sin(self.bob/6*math.pi)*2)
+        angle=self.spear_angle
+        state=self.attack_state
+
+        # 무적 깜빡
+        if self.invincible>0 and (self.invincible//4)%2==0: return
+
+        for i,(tx,ty) in enumerate(self.dash_trail):
+            a=(i+1)/max(1,len(self.dash_trail))
+            pygame.draw.rect(surf,(int(255*a),40,40),(int(tx-cam_x),int(ty-cam_y),12,12))
+        # 다리
+        lo=int(math.sin(self.bob/6*math.pi)*4)
+        pygame.draw.rect(surf,C_PLAYER_SH,(sx+4,sy+22-bob_y+lo,7,10))
+        pygame.draw.rect(surf,C_PLAYER_SH,(sx+13,sy+22-bob_y-lo,7,10))
+        # 몸
+        pygame.draw.rect(surf,C_PLAYER,(sx+2,sy+8-bob_y,self.w-4,16))
+        # 머리
+        pygame.draw.rect(surf,(230,190,150),(sx+5,sy-bob_y,14,12))
+        eye_x=sx+(13 if self.facing>0 else 7)
+        pygame.draw.rect(surf,C_DARK,(eye_x,sy+3-bob_y,3,3))
+
+        # ── 창 그리기 ──
+        pivot_x=sx+self.w//2; pivot_y=sy+self.h//2-2
+
+        if state==ATTACK_SPIN:
+            # ── 원형 잔상: 플레이어 주변을 둘러싸는 8개 창 ──
+            spin_a = self.spin_time / PARRY_SPIN_TIME * math.pi*4 + angle
+            orbit_r = 38  # 플레이어 중심에서 잔상까지 거리
+            ghost_count = 8
+            # 진행도에 따라 잔상 색 결정 (피격 강화 여부)
+            base_c = (255,80,80) if self.counter_enhanced else C_SPEAR
+            for i in range(ghost_count):
+                ga = spin_a + i*(math.pi*2/ghost_count)
+                alpha_ratio = 1.0 - i/ghost_count
+                ghost_c = tuple(int(v*alpha_ratio*0.85) for v in base_c)
+                ox = int(math.cos(ga)*orbit_r*0.55)
+                oy = int(math.sin(ga)*orbit_r*0.55)
+                self._draw_spear_at(surf, pivot_x+ox, pivot_y+oy, ga, ghost_c, length=42)
+            # 중심 창 (가장 밝게)
+            self._draw_spear_at(surf, pivot_x, pivot_y, spin_a, base_c, length=46)
+
+            # 강화 중이면 붉은 글로우 링
+            if self.counter_enhanced:
+                prog = min(self.spin_time/PARRY_SPIN_TIME, 1.0)
+                ring_r = int(50*prog)
+                if ring_r>2:
+                    rsurf=pygame.Surface((ring_r*2+4,ring_r*2+4),pygame.SRCALPHA)
+                    pygame.draw.circle(rsurf,(255,60,60,int(140*prog)),(ring_r+2,ring_r+2),ring_r,3)
+                    surf.blit(rsurf,(pivot_x-ring_r-2,pivot_y-ring_r-2))
+
+        elif state==ATTACK_PARRIED:
+            # 패링 대기: 창이 빛나며 진동
+            jitter = math.sin(self.parry_frames*0.8)*4
+            par_c = (255,80,80) if self.counter_enhanced else C_PARRY
+            self._draw_spear_at(surf,pivot_x+int(jitter),pivot_y,angle,par_c,length=48)
+            # 패링 글로우 원
+            prog = self.parry_frames/PARRY_WINDOW
+            r_glow = int(28*prog)
+            if r_glow>0:
+                gsurf=pygame.Surface((r_glow*2,r_glow*2),pygame.SRCALPHA)
+                pygame.draw.circle(gsurf,(*par_c,int(90*prog)),(r_glow,r_glow),r_glow)
+                surf.blit(gsurf,(pivot_x-r_glow,pivot_y-r_glow))
+
+        elif state==ATTACK_STAB:
+            # 찌르기: 창이 앞으로 쭉 뻗음
+            prog = 1-(self.stab_frame/STAB_ANIM_FRAMES)
+            extend = int(36*math.sin(prog*math.pi))
+            self._draw_spear_at(surf,
+                pivot_x+int(math.cos(self.stab_angle)*extend),
+                pivot_y+int(math.sin(self.stab_angle)*extend),
+                self.stab_angle, C_SPEAR, length=46)
+
+        elif state==ATTACK_COUNTER:
+            # 카운터: 색상·범위 강화 여부 반영
+            c_col = (255,40,40) if self.counter_enhanced else C_COUNTER
+            c_rng = int(COUNTER_RANGE*(1.8 if self.counter_enhanced else 1.0))
+            prog = 1-(self.counter_frame/14)
+            extend = int((60 if self.counter_enhanced else 45)*math.sin(prog*math.pi))
+            self._draw_spear_at(surf,
+                pivot_x+int(math.cos(self.counter_angle)*extend),
+                pivot_y+int(math.sin(self.counter_angle)*extend),
+                self.counter_angle, c_col,
+                length=56 if self.counter_enhanced else 46)
+            # 카운터 부채꼴 이펙트
+            arc_w = 1.1 if self.counter_enhanced else 0.8
+            a_start=self.counter_angle-arc_w; a_end=self.counter_angle+arc_w
+            pts=[(pivot_x,pivot_y)]
+            for i in range(15):
+                a=a_start+(a_end-a_start)*i/14
+                r=int(c_rng*prog)
+                pts.append((pivot_x+int(math.cos(a)*r),pivot_y+int(math.sin(a)*r)))
+            if len(pts)>=3:
+                cs=pygame.Surface((SCREEN_W,SCREEN_H),pygame.SRCALPHA)
+                alpha=int(130*math.sin(prog*math.pi))
+                pygame.draw.polygon(cs,(*c_col,alpha),pts)
+                surf.blit(cs,(0,0))
+
+        else:
+            # 기본 자세: 창 마우스 방향
+            if self.has_spear:
+                self._draw_spear_at(surf,pivot_x,pivot_y,angle,C_SPEAR,length=44)
+
+    def _draw_spear_at(self, surf, px, py, angle, color, length=44):
+        tail_x=px-int(math.cos(angle)*24)
+        tail_y=py-int(math.sin(angle)*24)
+        tip_x =px+int(math.cos(angle)*length)
+        tip_y =py+int(math.sin(angle)*length)
+        pygame.draw.line(surf,(140,100,50),(tail_x,tail_y),(px,py),3)
+        pygame.draw.line(surf,color,(px,py),(tip_x,tip_y),3)
+        # 창날 삼각형
+        perp=angle+math.pi/2
+        p1=(tip_x,tip_y)
+        p2=(tip_x-int(math.cos(angle)*10)+int(math.cos(perp)*5),
+            tip_y-int(math.sin(angle)*10)+int(math.sin(perp)*5))
+        p3=(tip_x-int(math.cos(angle)*10)-int(math.cos(perp)*5),
+            tip_y-int(math.sin(angle)*10)-int(math.sin(perp)*5))
+        pygame.draw.polygon(surf,color,[p1,p2,p3])
+
+# ──────────────────────────────────────────────
+#  적
+# ──────────────────────────────────────────────
+class Enemy:
+    def __init__(self,x,y,data):
+        self.x,self.y=float(x),float(y)
+        self.size=data["size"]; self.hp=data["hp"]; self.max_hp=data["hp"]
+        self.speed=data["speed"]; self.dmg=data["dmg"]
+        self.color=data["color"]; self.shadow=data["shadow"]
+        self.name=data["name"]; self.score=data["score"]
+        self.alive=True; self.stun=0; self.bob=random.randint(0,12)
+        self.stuck_spears=[]   # 박힌 창 목록
+
+    @property
+    def cx(self): return self.x
+    @property
+    def cy(self): return self.y
     @property
     def rect(self):
-        return pygame.Rect(self.x - self.r, self.y - self.r,
-                           self.r * 2, self.r * 2)
+        return pygame.Rect(int(self.x)-self.size,int(self.y)-self.size,self.size*2,self.size*2)
 
-    def update(self):
-        self.tick += 1
-        if not self.being_eaten:
-            self.y += self.speed
-        return self.y - self.r < HEIGHT
+    def update(self,player,walls,particles):
+        self.bob=(self.bob+1)%12
+        if self.stun>0: self.stun-=1; return
+        dx,dy=player.cx-self.cx,player.cy-self.cy
+        ndx,ndy=normalize(dx,dy)
+        nx=self.x+ndx*self.speed; ny=self.y+ndy*self.speed
+        r=pygame.Rect(int(nx)-self.size,int(ny)-self.size,self.size*2,self.size*2)
+        if not any(r.colliderect(w) for w in walls):
+            self.x,self.y=nx,ny
+        # 접촉 데미지
+        if dist(self.cx,self.cy,player.cx,player.cy)<self.size+14:
+            parried = player.take_damage(self.dmg)
+            if parried:
+                spawn_particles(particles,self.cx,self.cy,C_PARRY,12)
 
-    def pull_toward(self, px, py):
-        self.being_eaten  = True
-        self.eat_progress += 1
-        dx = px - self.x
-        dy = py - self.y
-        d  = max(1, math.hypot(dx, dy))
-        pull = 6 + self.eat_progress * 0.8
-        self.x += dx / d * pull
-        self.y += dy / d * pull
-        dist = math.hypot(self.x - px, self.y - py)
-        return self.eat_progress >= 18 or dist < 20
+    def take_damage(self,dmg):
+        self.hp-=dmg; self.stun=12
+        if self.hp<=0: self.alive=False
 
-    def draw(self, surface):
-        scale = 1.0
-        if self.being_eaten:
-            scale = max(0.2, 1.0 - (self.eat_progress / 18) * 0.8)
-        r = max(1, int(self.r * scale))
-        bubble = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
-        wobble = 0.06 * math.sin(self.tick * 0.12)
-        if self.kind == "heart":
-            bubble_color = (255, 180, 200, 60)
-            rim_color    = (255, 120, 160, 180)
+    def draw(self,surf,cam_x,cam_y):
+        sx=int(self.x-cam_x); sy=int(self.y-cam_y)
+        bob_y=int(math.sin(self.bob/6*math.pi)*2)
+        s=self.size
+        pygame.draw.ellipse(surf,(0,0,0),(sx-s+2,sy+s-4,s*2-4,8))
+        pygame.draw.rect(surf,self.shadow,(sx-s+2,sy-s+2-bob_y,s*2,s*2))
+        pygame.draw.rect(surf,self.color,(sx-s,sy-s-bob_y,s*2,s*2))
+        pygame.draw.rect(surf,(255,50,50),(sx-4,sy-s+4-bob_y,4,4))
+        pygame.draw.rect(surf,(255,50,50),(sx+1,sy-s+4-bob_y,4,4))
+        draw_bar(surf,sx-s,sy-s-bob_y-10,s*2,5,self.hp,self.max_hp,C_HP_RED)
+        # 박힌 창 렌더링
+        for sp in self.stuck_spears:
+            sp.draw(surf,self.cx,self.cy,cam_x,cam_y)
+
+class Boss(Enemy):
+    def __init__(self,x,y):
+        super().__init__(x,y,BOSS_DATA)
+        self.phase=1; self.shoot_timer=0
+    def update(self,player,walls,particles,projectiles=None):
+        if self.hp<self.max_hp*0.5 and self.phase==1:
+            self.phase=2; self.speed*=1.5
+        super().update(player,walls,particles)
+        if projectiles is not None:
+            self.shoot_timer-=1
+            if self.shoot_timer<=0:
+                self.shoot_timer=80 if self.phase==1 else 50
+                dx,dy=player.cx-self.cx,player.cy-self.cy
+                base=math.atan2(dy,dx)
+                for off in [-0.3,0,0.3]:
+                    projectiles.append(BossProjectile(self.cx,self.cy,base+off))
+    def draw(self,surf,cam_x,cam_y):
+        sx=int(self.x-cam_x); sy=int(self.y-cam_y)
+        s=self.size; bob_y=int(math.sin(self.bob/6*math.pi)*3)
+        cloak_c=(80,20,80) if self.phase==1 else (120,20,20)
+        pygame.draw.rect(surf,cloak_c,(sx-s-4,sy-s+8-bob_y,s*2+8,s*2))
+        pygame.draw.rect(surf,self.shadow,(sx-s+2,sy-s+2-bob_y,s*2,s*2))
+        pygame.draw.rect(surf,self.color,(sx-s,sy-s-bob_y,s*2,s*2))
+        crown_c=C_GOLD if self.phase==1 else (255,80,80)
+        for i in range(5):
+            h=8 if i%2==0 else 5
+            pygame.draw.rect(surf,crown_c,(sx-s+i*14,sy-s-8-bob_y,10,h))
+        eye_c=(200,100,255) if self.phase==1 else (255,50,50)
+        pygame.draw.rect(surf,eye_c,(sx-8,sy-s+6-bob_y,6,6))
+        pygame.draw.rect(surf,eye_c,(sx+3,sy-s+6-bob_y,6,6))
+        draw_bar(surf,sx-s*2,sy-s-bob_y-14,s*4,8,self.hp,self.max_hp,
+                 (200,60,200) if self.phase==1 else (255,60,60))
+        fnt=pixel_font(13)
+        draw_text_shadow(surf,f"BOSS: {self.name}"+(" [2페이즈]" if self.phase==2 else ""),
+                         fnt,C_BOSS,sx-s*2,sy-s-bob_y-28)
+        for sp in self.stuck_spears:
+            sp.draw(surf,self.cx,self.cy,cam_x,cam_y)
+
+class BossProjectile:
+    def __init__(self,x,y,angle):
+        self.x,self.y=float(x),float(y)
+        self.vx=math.cos(angle)*5; self.vy=math.sin(angle)*5
+        self.alive=True; self.traveled=0
+    def update(self,walls):
+        self.x+=self.vx; self.y+=self.vy; self.traveled+=5
+        if self.traveled>500: self.alive=False; return
+        r=pygame.Rect(int(self.x)-4,int(self.y)-4,8,8)
+        if any(r.colliderect(w) for w in walls): self.alive=False
+    def draw(self,surf,cam_x,cam_y):
+        sx,sy=int(self.x-cam_x),int(self.y-cam_y)
+        pygame.draw.rect(surf,(180,80,255),(sx-5,sy-5,10,10))
+        pygame.draw.rect(surf,(220,150,255),(sx-3,sy-3,6,6))
+
+# ──────────────────────────────────────────────
+#  방 생성
+# ──────────────────────────────────────────────
+def build_room(wave):
+    walls=[]; obstacles=[]
+    for c in range(ROOM_COLS):
+        walls.append(pygame.Rect(c*TILE,0,TILE,TILE))
+        walls.append(pygame.Rect(c*TILE,(ROOM_ROWS-1)*TILE,TILE,TILE))
+    for r in range(1,ROOM_ROWS-1):
+        walls.append(pygame.Rect(0,r*TILE,TILE,TILE))
+        walls.append(pygame.Rect((ROOM_COLS-1)*TILE,r*TILE,TILE,TILE))
+    random.seed(wave*137+42)
+    attempts=0
+    while len(obstacles)<4+wave and attempts<200:
+        attempts+=1
+        c=random.randint(3,ROOM_COLS-4); r=random.randint(2,ROOM_ROWS-3)
+        rect=pygame.Rect(c*TILE,r*TILE,TILE*random.randint(1,3),TILE)
+        safe=[pygame.Rect(TILE,TILE,TILE*3,TILE*3),
+              pygame.Rect((ROOM_COLS-3)*TILE,(ROOM_ROWS//2-1)*TILE,TILE*2,TILE*2)]
+        if not any(rect.colliderect(s) for s in safe):
+            obstacles.append(rect)
+    walls.extend(obstacles)
+    return walls, obstacles
+
+def spawn_enemies(wave,is_boss_wave,walls):
+    enemies=[]; safe=pygame.Rect(TILE,TILE,TILE*4,TILE*4)
+    if is_boss_wave:
+        enemies.append(Boss(ROOM_W-TILE*4,ROOM_H//2)); return enemies
+    count=3+wave*2
+    for _ in range(count):
+        for _ in range(50):
+            x=random.randint(TILE*2,ROOM_W-TILE*2)
+            y=random.randint(TILE*2,ROOM_H-TILE*2)
+            r=pygame.Rect(x-20,y-20,40,40)
+            if not any(r.colliderect(w) for w in walls) and not safe.colliderect(r):
+                data=random.choice(ENEMY_TYPES)
+                if wave>=2 and random.random()<0.3:
+                    data=ENEMY_TYPES[min(wave-1,2)]
+                enemies.append(Enemy(float(x),float(y),data)); break
+    return enemies
+
+def get_camera(player):
+    cx=player.cx-SCREEN_W/2; cy=player.cy-SCREEN_H/2
+    return (max(0,min(cx,ROOM_W-SCREEN_W)),
+            max(0,min(cy,ROOM_H-SCREEN_H)))
+
+def draw_room(surf,walls,obstacles,cam_x,cam_y,door_open):
+    for row in range(1,ROOM_ROWS-1):
+        for col in range(1,ROOM_COLS-1):
+            c=C_FLOOR if (row+col)%2==0 else C_FLOOR2
+            pygame.draw.rect(surf,c,(col*TILE-cam_x,row*TILE-cam_y,TILE,TILE))
+    for w in walls:
+        if w not in obstacles:
+            bx=w.x-cam_x; by=w.y-cam_y
+            pygame.draw.rect(surf,C_WALL,(bx,by,TILE,TILE))
+            pygame.draw.rect(surf,C_WALL_TOP,(bx,by,TILE,4))
+    for o in obstacles:
+        bx=o.x-cam_x; by=o.y-cam_y
+        pygame.draw.rect(surf,(38,28,55),(bx,by,o.w,o.h))
+        pygame.draw.rect(surf,(65,50,80),(bx,by,o.w,4))
+        pygame.draw.rect(surf,(65,50,80),(bx,by,4,o.h))
+    dx=(ROOM_COLS-1)*TILE-cam_x; dy=(ROOM_ROWS//2-1)*TILE-cam_y
+    dc=C_DOOR_OPEN if door_open else C_DOOR
+    pygame.draw.rect(surf,dc,(dx,dy,TILE,TILE*2))
+    if door_open:
+        pygame.draw.rect(surf,C_WHITE,(dx+4,dy+4,TILE-8,TILE*2-8),2)
+
+# ──────────────────────────────────────────────
+#  HUD
+# ──────────────────────────────────────────────
+def draw_hud(surf, player, time_left, wave, is_boss_wave, enemies_left):
+    fnt_big  =pixel_font(20); fnt_med=pixel_font(16); fnt_sm=pixel_font(13)
+
+    # HP
+    draw_text_shadow(surf,"HP",fnt_sm,C_WHITE,12,10)
+    draw_bar(surf,38,12,150,14,player.hp,player.max_hp,C_HP_GREEN)
+
+    # 창 보유
+    spear_txt = "[E]창 보유" if player.has_spear else "[E]없음"
+    spear_c   = C_SPEAR if player.has_spear else (120,100,80)
+    draw_text_shadow(surf,spear_txt,fnt_sm,spear_c,12,32)
+
+    # 공격 상태 표시
+    state=player.attack_state
+    if state==ATTACK_SPIN:
+        prog=min(player.spin_time/PARRY_SPIN_TIME,1.0)
+        bar_w=120
+        draw_bar(surf,12,52,bar_w,10,prog*100,100,(100,200,255))
+        draw_text_shadow(surf,"창 돌리는 중...",fnt_sm,(180,230,255),12,64)
+    elif state==ATTACK_PARRIED:
+        prog=player.parry_frames/PARRY_WINDOW
+        if player.counter_enhanced:
+            draw_text_shadow(surf,">> 강화 패링! 카운터 <<",fnt_med,(255,60,60),12,52)
         else:
-            bubble_color = (160, 220, 255, 60)
-            rim_color    = (80, 180, 255, 180)
-        cx = r + 2
-        cy = r + 2
-        pygame.draw.circle(bubble, bubble_color, (cx, cy), r)
-        pygame.draw.circle(bubble, rim_color,    (cx, cy), r, 2)
-        hl_r = max(1, r // 4)
-        pygame.draw.circle(bubble, (255, 255, 255, 120),
-                           (cx - r // 3, cy - r // 3), hl_r)
-        bx = int(self.x) - r - 2
-        by = int(self.y) - r - 2
-        surface.blit(bubble, (bx, by))
-        icon_r = max(1, int(r * 0.55 * scale))
-        if self.kind == "heart":
-            self._draw_heart(surface, int(self.x), int(self.y), icon_r)
-        else:
-            self._draw_swirl(surface, int(self.x), int(self.y), icon_r)
-
-    def _draw_heart(self, surface, cx, cy, size):
-        s = pygame.Surface((size * 4, size * 4), pygame.SRCALPHA)
-        sc = size * 2
-        color = (255, 80, 120, 230)
-        off = size // 2
-        r2  = size // 2 + 1
-        pygame.draw.circle(s, color, (sc - off, sc - off), r2)
-        pygame.draw.circle(s, color, (sc + off, sc - off), r2)
-        pts = [
-            (sc - size, sc - off + 2),
-            (sc + size, sc - off + 2),
-            (sc,        sc + size),
-        ]
-        pygame.draw.polygon(s, color, pts)
-        surface.blit(s, (cx - size * 2, cy - size * 2))
-
-    def _draw_swirl(self, surface, cx, cy, size):
-        angle_offset = self.tick * 4
-        for i in range(3):
-            base_angle = math.radians(angle_offset + i * 120)
-            arc_r = size * (1.0 - i * 0.2)
-            if arc_r < 2:
-                continue
-            color_alpha = 230 - i * 40
-            rect = pygame.Rect(cx - arc_r, cy - arc_r, arc_r * 2, arc_r * 2)
-            start = base_angle
-            end   = base_angle + math.pi * 1.3
-            pygame.draw.arc(surface, (80, 200, 255), rect,
-                    min(start, end), max(start, end), 2)
-
-
-class AbsorbParticle:
-    def __init__(self, x, y, target_rect, color):
-        self.x = float(x)
-        self.y = float(y)
-        self.target = target_rect
-        self.color = color
-        self.life = 1.0
-        self.size = random.randint(4, 9)
-        offset_x = random.uniform(-15, 15)
-        offset_y = random.uniform(-15, 15)
-        self.start_x = x + offset_x
-        self.start_y = y + offset_y
-        self.x = self.start_x
-        self.y = self.start_y
-        self.progress = 0.0
-        self.speed = random.uniform(0.04, 0.08)
-
-    def update(self):
-        self.progress += self.speed
-        self.life = 1.0 - self.progress
-        tx = self.target.centerx
-        ty = self.target.centery
-        self.x = self.start_x + (tx - self.start_x) * self.progress
-        self.y = self.start_y + (ty - self.start_y) * self.progress
-        return self.progress < 1.0
-
-    def draw(self, surface):
-        alpha = int(self.life * 255)
-        size = max(1, int(self.size * self.life))
-        r = min(255, self.color[0])
-        g = min(255, self.color[1])
-        b = min(255, self.color[2])
-        s = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
-        pygame.draw.circle(s, (r, g, b, alpha), (size, size), size)
-        surface.blit(s, (int(self.x) - size, int(self.y) - size))
-
-
-class ScorePopup:
-    def __init__(self, x, y, text="+1", color=(255, 100, 180)):
-        self.x = float(x)
-        self.y = float(y)
-        self.text = text
-        self.color = color
-        self.life = 1.0
-        self.vy = -2.0
-        self.font = get_korean_font(30)
-
-    def update(self):
-        self.life -= 0.025
-        self.y += self.vy
-        self.vy *= 0.95
-        return self.life > 0
-
-    def draw(self, surface):
-        alpha = int(self.life * 255)
-        s = pygame.Surface((200, 50), pygame.SRCALPHA)
-        # 윤곽선 효과
-        outline_col = (0, 0, 0)
-        for dx in range(-2, 3):
-            for dy in range(-2, 3):
-                if dx != 0 or dy != 0:
-                    out_surf = self.font.render(self.text, True, (*outline_col, alpha))
-                    s.blit(out_surf, (2 + dx, 2 + dy))
-        txt = self.font.render(self.text, True, (*self.color, alpha))
-        s.blit(txt, (2, 2))
-        surface.blit(s, (int(self.x) - 30, int(self.y)))
-
-
-class EatRing:
-    def __init__(self, center, max_r=80):
-        self.center = center
-        self.max_r = max_r
-        self.r = float(max_r)
-        self.life = 1.0
-
-    def update(self):
-        self.life -= 0.07
-        self.r = self.max_r * self.life
-        return self.life > 0
-
-    def draw(self, surface):
-        if self.r < 2:
-            return
-        alpha = int(self.life * 200)
-        s = pygame.Surface((self.max_r * 2 + 4, self.max_r * 2 + 4), pygame.SRCALPHA)
-        pygame.draw.circle(s, (255, 100, 180, alpha),
-                           (self.max_r + 2, self.max_r + 2),
-                           int(self.r), 2)
-        surface.blit(s, (int(self.center[0]) - self.max_r - 2,
-                         int(self.center[1]) - self.max_r - 2))
-
-
-class FlashBurst:
-    def __init__(self, x, y, color):
-        self.x = x
-        self.y = y
-        self.color = color
-        self.life = 1.0
-        self.max_r = 20
-
-    def update(self):
-        self.life -= 0.12
-        return self.life > 0
-
-    def draw(self, surface):
-        r = int(self.max_r * (1.0 - self.life))
-        alpha = int(self.life * 180)
-        if r < 1:
-            return
-        s = pygame.Surface((r * 2 + 2, r * 2 + 2), pygame.SRCALPHA)
-        pygame.draw.circle(s, (*self.color, alpha), (r + 1, r + 1), r)
-        surface.blit(s, (self.x - r - 1, self.y - r - 1))
-
-
-class PurpleExplosionParticle:
-    def __init__(self, x, y):
-        self.x = float(x)
-        self.y = float(y)
-        angle = random.uniform(0, math.pi * 2)
-        speed = random.uniform(3, 9)
-        self.vx = math.cos(angle) * speed
-        self.vy = math.sin(angle) * speed
-        self.life = 1.0
-        self.size = random.randint(4, 10)
-        self.color = random.choice([
-            (200, 80, 255), (160, 40, 220), (255, 120, 255),
-            (120, 0, 200), (220, 150, 255)
-        ])
-
-    def update(self):
-        self.life -= 0.04
-        self.x += self.vx
-        self.y += self.vy
-        self.vx *= 0.92
-        self.vy *= 0.92
-        return self.life > 0
-
-    def draw(self, surface):
-        alpha = int(self.life * 255)
-        size = max(1, int(self.size * self.life))
-        s = pygame.Surface((size * 2 + 2, size * 2 + 2), pygame.SRCALPHA)
-        pygame.draw.circle(s, (*self.color, alpha), (size + 1, size + 1), size)
-        surface.blit(s, (int(self.x) - size - 1, int(self.y) - size - 1))
-
-
-class OrangeWarningPillar:
-    WARN_DURATION = FPS * 3
-
-    def __init__(self, player_ref):
-        self.player_ref = player_ref
-        self.x = float(player_ref.centerx)
-        self.timer = 0
-        self.done = False
-        self.final_x = None
-
-    @property
-    def countdown(self):
-        remaining = self.WARN_DURATION - self.timer
-        return max(0, math.ceil(remaining / FPS))
-
-    def update(self):
-        self.timer += 1
-        if self.timer < self.WARN_DURATION - 30:
-            self.x = float(self.player_ref.centerx)
-        if self.timer >= self.WARN_DURATION:
-            self.final_x = int(self.x)
-            self.done = True
-        return not self.done
-
-    def draw(self, surface):
-        ratio = self.timer / self.WARN_DURATION
-        alpha = int(100 + 80 * math.sin(self.timer * 0.25))
-        cx = int(self.x)
-
-        locked = self.timer >= self.WARN_DURATION - 30
-        if locked and (self.timer // 4) % 2 == 0:
-            return
-
-        pillar_w = 32
-        pillar_surf = pygame.Surface((pillar_w, HEIGHT), pygame.SRCALPHA)
-        pillar_color = (255, 140, 0, max(20, alpha // 3))
-        pillar_surf.fill(pillar_color)
-        surface.blit(pillar_surf, (cx - pillar_w // 2, 0))
-
-        line_s = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        pygame.draw.line(line_s, (255, 140, 0, alpha),
-                         (cx - pillar_w // 2, 0), (cx - pillar_w // 2, HEIGHT), 1)
-        pygame.draw.line(line_s, (255, 140, 0, alpha),
-                         (cx + pillar_w // 2, 0), (cx + pillar_w // 2, HEIGHT), 1)
-        surface.blit(line_s, (0, 0))
-
-        count = self.countdown
-        count_font = get_korean_font(48)
-        # 윤곽선 카운트다운
-        if (self.timer // 15) % 2 == 0:
-            draw_outlined_text_centered(surface, count_font, str(count),
-                                        (255, 200, 80), (180, 60, 0),
-                                        cx, HEIGHT // 2 - 30, outline_width=3)
-
-        tip_y = 20 + int(math.sin(self.timer * 0.15) * 10)
-        tri_pts = [
-            (cx,      tip_y + 30),
-            (cx - 12, tip_y),
-            (cx + 12, tip_y),
-        ]
-        tri_alpha = min(255, alpha + 60)
-        ts = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        pygame.draw.polygon(ts, (255, 160, 0, tri_alpha), tri_pts)
-        surface.blit(ts, (0, 0))
-
-
-class LevelUpBanner:
-    DURATION = 120
-
-    def __init__(self, label):
-        text = f"LEVEL UP!  {label}"
-        self.text = text
-        self.surf = font_big.render(text, True, YELLOW)
-        self.timer = 0
-        self.w = self.surf.get_width()
-
-    def update(self):
-        self.timer += 1
-        return self.timer < self.DURATION
-
-    def draw(self, surface):
-        t = self.timer / self.DURATION
-        if t < 0.3:
-            progress = t / 0.3
-            x = WIDTH + self.w - (WIDTH + self.w - (WIDTH // 2 - self.w // 2)) * self._ease_out(progress)
-        elif t < 0.7:
-            x = WIDTH // 2 - self.w // 2
-        else:
-            progress = (t - 0.7) / 0.3
-            x = (WIDTH // 2 - self.w // 2) - (WIDTH // 2 - self.w // 2 + self.w + WIDTH) * self._ease_in(progress)
-
-        alpha = 255
-        if t > 0.8:
-            alpha = int(255 * (1.0 - (t - 0.8) / 0.2))
-
-        # 윤곽선 배너
-        y = HEIGHT // 2 - self.surf.get_height() // 2
-        tmp = pygame.Surface((WIDTH + self.w * 2, self.surf.get_height() + 20), pygame.SRCALPHA)
-        ox = self.w
-        for dx in range(-4, 5):
-            for dy in range(-4, 5):
-                if dx != 0 or dy != 0:
-                    out = font_big.render(self.text, True, (180, 80, 0))
-                    tmp.blit(out, (ox + dx, 10 + dy))
-        main_s = font_big.render(self.text, True, YELLOW)
-        tmp.blit(main_s, (ox, 10))
-        tmp.set_alpha(alpha)
-        surface.blit(tmp, (int(x) - ox, y - 10))
-
-    def _ease_out(self, t): return 1 - (1 - t) ** 2
-    def _ease_in(self,  t): return t ** 2
-
-
-def spawn_enemy(level_cfg):
-    x = random.randint(0, WIDTH - ENEMY_W)
-    speed = random.randint(level_cfg["min_speed"], level_cfg["max_speed"])
-    return [pygame.Rect(x, -ENEMY_H, ENEMY_W, ENEMY_H), speed, "red", "", [0, 0], 0]
-
-def spawn_yellow_enemy():
-    x = random.randint(0, WIDTH - ENEMY_W)
-    rect = pygame.Rect(x, -ENEMY_H, ENEMY_W, ENEMY_H)
-    return [rect, 4, "yellow", "fall", [0, 0], 0]
-
-def spawn_purple_enemy():
-    x = random.randint(0, WIDTH - ENEMY_W)
-    speed = random.randint(3, 6)
-    rect = pygame.Rect(x, -ENEMY_H, ENEMY_W, ENEMY_H)
-    return [rect, speed, "purple", "fall", [0, 0], 0]
-
-
-def draw_dashed_line(surface, color, start_pos, end_pos, dash_length=10):
-    x1, y1 = start_pos
-    x2, y2 = end_pos
-    dx = x2 - x1; dy = y2 - y1
-    dist = max(1, (dx**2 + dy**2) ** 0.5)
-    dx /= dist; dy /= dist
-    for i in range(0, int(dist), dash_length * 2):
-        s = (x1 + dx * i,               y1 + dy * i)
-        e = (x1 + dx * (i+dash_length),  y1 + dy * (i+dash_length))
-        pygame.draw.line(surface, color, s, e, 2)
-
-def draw_hud(surface, score, last_gain, level_cfg, lives, eat_cooldown, player_rect,
-             eat_boost_timer, hunger):
-    # Score - 윤곽선 텍스트
-    score_txt = f"Score: {score}"
-    score_surf = font.render(score_txt, True, WHITE)
-    score_x = WIDTH // 2 - score_surf.get_width() // 2
-    draw_outlined_text(surface, font, score_txt, WHITE, BLACK, score_x, 10, outline_width=2)
-
-    if last_gain > 0:
-        draw_outlined_text(surface, font_small, f"+{last_gain}", (255, 200, 80), BLACK,
-                           score_x + score_surf.get_width() + 6, 14, outline_width=2)
-
-    # Lives - 윤곽선
-    lives_text = f"{'♥ ' * lives}"
-    draw_outlined_text(surface, font, lives_text, RED, (100, 0, 0),
-                       WIDTH - font.size(lives_text)[0] - 50, 10, outline_width=2)
-
-    # Level label
-    draw_outlined_text(surface, font, level_cfg['label'], YELLOW, (120, 80, 0),
-                       10, HEIGHT - 44, outline_width=2)
-
-    if eat_boost_timer > 0:
-        secs = math.ceil(eat_boost_timer / FPS)
-        draw_outlined_text(surface, font_small, f"EAT BOOST  {secs}s",
-                           (80, 220, 255), (0, 80, 120), 10, 10, outline_width=2)
-
-    cx, cy = player_rect.centerx, player_rect.centery
-    RING_R = 38
-    pygame.draw.circle(surface, (80, 80, 80), (cx, cy), RING_R, 3)
-    ratio = 1.0 - eat_cooldown / 60
-    if ratio > 0:
-        arc_rect = pygame.Rect(cx - RING_R, cy - RING_R, RING_R * 2, RING_R * 2)
-        start_angle = math.pi / 2
-        end_angle   = start_angle - ratio * 2 * math.pi
-        pygame.draw.arc(surface, (255, 100, 180), arc_rect,
-                        min(start_angle, end_angle),
-                        max(start_angle, end_angle), 3)
-
-    if eat_boost_timer > 0:
-        pulse = int(math.sin(pygame.time.get_ticks() * 0.01) * 4)
-        pygame.draw.circle(surface, (80, 220, 255), (cx, cy), RING_R + 8 + pulse, 2)
-
-    # 허기 게이지
-    bar_w = 22
-    bar_h = 360
-    bar_x = WIDTH - 34
-    bar_y = HEIGHT // 2 - bar_h // 2
-
-    hunger_ratio = max(0.0, min(1.0, hunger / HUNGER_MAX))
-
-    if hunger_ratio > 0.6:
-        hunger_color = (80, 220, 120)
-    elif hunger_ratio > 0.3:
-        hunger_color = (255, 190, 60)
-    else:
-        hunger_color = (255, 90, 90)
-
-    draw_outlined_text(surface, font_small, "허기", WHITE, BLACK,
-                       bar_x - font_small.size("허기")[0] // 2 + bar_w // 2, bar_y - 30, outline_width=2)
-
-    pygame.draw.rect(surface, (70, 70, 70), (bar_x, bar_y, bar_w, bar_h), border_radius=8)
-    pygame.draw.rect(surface, WHITE, (bar_x, bar_y, bar_w, bar_h), 2, border_radius=8)
-
-    fill_h = int(bar_h * hunger_ratio)
-    if fill_h > 0:
-        fill_rect = pygame.Rect(bar_x + 3, bar_y + bar_h - fill_h + 3, bar_w - 6, fill_h - 6)
-        if fill_rect.height > 0:
-            pygame.draw.rect(surface, hunger_color, fill_rect, border_radius=6)
-
-    if hunger_ratio <= 0.2 and (pygame.time.get_ticks() // 180) % 2 == 0:
-        draw_outlined_text(surface, font_small, "EMPTY", RED, (100, 0, 0),
-                           bar_x - font_small.size("EMPTY")[0] - 8, bar_y + bar_h - 20, outline_width=2)
-
-def game_over_screen(score):
-    screen.fill(GRAY)
-    draw_outlined_text_centered(screen, font_big, "GAME OVER", RED, (100, 0, 0),
-                                WIDTH // 2, 220, outline_width=4)
-    draw_outlined_text_centered(screen, font, f"Score: {score}", WHITE, BLACK,
-                                WIDTH // 2, 310, outline_width=3)
-    draw_outlined_text_centered(screen, font, "R: Restart   Q: Quit", WHITE, BLACK,
-                                WIDTH // 2, 360, outline_width=3)
-    pygame.display.flip()
-    while True:
-        for e in pygame.event.get():
-            if e.type == pygame.QUIT: pygame.quit(); sys.exit()
-            if e.type == pygame.KEYDOWN:
-                if e.key == pygame.K_r: return True
-                if e.key == pygame.K_q: pygame.quit(); sys.exit()
-
-
-def main():
-    pygame.mixer.music.load(BGM_GAME)
-    pygame.mixer.music.play(-1)
-    pygame.mixer.music.set_volume(0.2)
-    
-    player = pygame.Rect(WIDTH // 2, HEIGHT - 80, PLAYER_W, PLAYER_H)
-
-    frame_index = 0
-    frame_timer = 0
-    facing_left = False
-
-    eat_active    = 0
-    eat_cooldown  = 0
-    eat_boost_timer = 0
-
-    absorb_particles = []
-    score_popups     = []
-    eat_rings        = []
-    flash_bursts     = []
-    purple_explosion_particles = []
-
-    enemies      = []
-    items        = []
-    item_eaten   = {}
-    item_spawn_timer = 0
-
-    orange_pillars   = []
-    orange_pending   = []
-
-    score = 0
-    last_gain = 0
-    last_gain_timer = 0
-    lives = 4
-    hunger = HUNGER_MAX
-    spawn_timer = 0
-    level_idx   = 0
-    level_cfg   = LEVELS[level_idx]
-    invincible  = 0
-    level_up_banners = []
-
-    being_eaten = {}
-
-    game_surface = pygame.Surface((WIDTH, HEIGHT))
-    shake_timer = 0
-    shake_strength = 0
-
-    EAT_RANGE      = 80
-    EAT_PULL_TICKS = 18
-
-    orange_spawn_timer = 0
-    ORANGE_SPAWN_INTERVAL = random.randint(300, 480)
-
-    PURPLE_SPAWN_CHANCE = 0.15
-    ORANGE_SPAWN_CHANCE = 0.10
+            draw_text_shadow(surf,">> 패링 성공! 좌클릭으로 카운터 <<",fnt_med,C_PARRY,12,52)
+        bar_c=(255,60,60) if player.counter_enhanced else C_PARRY
+        draw_bar(surf,12,72,160,8,prog*100,100,bar_c)
+    elif state==ATTACK_COUNTER:
+        draw_text_shadow(surf,"COUNTER!!",fnt_big,C_COUNTER,12,52)
+
+    # 타이머
+    tc=C_TIMER_OK if time_left>20 else (C_TIMER_WARN if time_left>10 else C_TIMER_CRIT)
+    draw_text_shadow(surf,f"{int(time_left):02d}s",fnt_big,tc,SCREEN_W//2-22,8)
+
+    # 웨이브
+    draw_text_shadow(surf,f"WAVE {wave}"+(" BOSS" if is_boss_wave else ""),
+                     fnt_med,C_GOLD,SCREEN_W-160,8)
+    draw_text_shadow(surf,f"적 {enemies_left}",fnt_sm,C_WHITE,SCREEN_W-100,30)
+    draw_text_shadow(surf,f"SCORE {player.score}",fnt_sm,C_WHITE,SCREEN_W-160,50)
+
+    # 조작 안내
+    guide="좌클릭:찌르기  우클릭홀드:패링  E:투척"
+    surf.blit(fnt_sm.render(guide,False,(120,100,140)),(10,SCREEN_H-22))
+
+def draw_overlay(surf,title,subtitle,color):
+    ov=pygame.Surface((SCREEN_W,SCREEN_H),pygame.SRCALPHA)
+    ov.fill((0,0,0,160)); surf.blit(ov,(0,0))
+    ft=pixel_font(52); fs=pixel_font(22)
+    t=ft.render(title,False,color)
+    s=fs.render(subtitle,False,C_WHITE)
+    surf.blit(t,(SCREEN_W//2-t.get_width()//2,SCREEN_H//2-70))
+    surf.blit(s,(SCREEN_W//2-s.get_width()//2,SCREEN_H//2+10))
+
+def draw_title(surf,tick):
+    surf.fill(C_BG)
+    ft=pixel_font(52); fm=pixel_font(22); fs=pixel_font(16)
+    pulse=abs(math.sin(tick/40))*30
+    c=(int(180+pulse),int(100+pulse//2),int(220+pulse//3))
+    t=ft.render("SPEAR DUNGEON",False,c)
+    surf.blit(t,(SCREEN_W//2-t.get_width()//2,130))
+    s=fm.render("창술로 던전을 탈출하라",False,C_GOLD)
+    surf.blit(s,(SCREEN_W//2-s.get_width()//2,210))
+    lines=["WASD : 이동",
+       "좌클릭 : 찌르기 (풍압 발생)",
+       "우클릭 홀드 0.5초 : 패링 준비",
+       "  └ 패링 중 피격 → 카운터 대기",
+       "  └ 카운터 대기 중 좌클릭 → 카운터!",
+       "E : 창 투척 (적에게 박힘)",
+       "R : 창 회수"]
+    for i,l in enumerate(lines):
+        txt=fs.render(l,False,(180,160,200))
+        surf.blit(txt,(SCREEN_W//2-txt.get_width()//2,290+i*26))
+    blink=fm.render("[ SPACE / ENTER - 시작 ]",False,
+                    C_WHITE if (tick//30)%2==0 else (100,80,120))
+    surf.blit(blink,(SCREEN_W//2-blink.get_width()//2,460))
+
+# ──────────────────────────────────────────────
+#  메인 루프
+# ──────────────────────────────────────────────
+def game_loop():
+    pygame.init()
+    pygame.display.set_caption("SPEAR DUNGEON")
+    screen=pygame.display.set_mode((SCREEN_W,SCREEN_H))
+    clock=pygame.time.Clock()
+
+    S_TITLE="title"; S_PLAY="play"; S_WIN="win"; S_LOSE="lose"
+    state=S_TITLE; tick=0
+
+    def init_game():
+        pl=Player(TILE*2+8, TILE*3)
+        wave=1; is_boss=False
+        walls,obstacles=build_room(wave)
+        enemies=spawn_enemies(wave,is_boss,walls)
+        thrown=[]; projectiles=[]; particles=[]
+        tl=float(TIME_LIMIT)
+        return pl,wave,is_boss,walls,obstacles,enemies,thrown,projectiles,particles,tl
+
+    pl,wave,is_boss,walls,obstacles,enemies,thrown,projectiles,particles,time_left=init_game()
+    door_open=False; final_score=0
+
+    # 마우스 버튼 상태 (이벤트 기반 one-shot + 홀드 구분)
+    mb_left_pressed=False    # 이번 프레임 눌렸는지 (one-shot)
+    mb_right_held=False      # 현재 홀드 중
+    key_e_pressed=False
+    key_r_pressed=False
 
     while True:
-        dt = clock.tick(FPS)
-        
-        prev_eat_boost_timer = eat_boost_timer
+        dt=clock.tick(FPS)/1000.0
+        tick+=1
+        keys=pygame.key.get_pressed()
+        mx,my=pygame.mouse.get_pos()
 
-        if invincible > 0:
-            invincible -= 1
-        eat_active   = max(0, eat_active - 1)
-        eat_cooldown = max(0, eat_cooldown - 1)
-        
-        if eat_boost_timer > 0:
-            eat_boost_timer -= 1
-            eat_active = max(eat_active, 1)
-            
-        if prev_eat_boost_timer > 0 and eat_boost_timer == 0:
-            invincible = max(invincible, 90)
-            flash_bursts.append(
-                FlashBurst(player.centerx, player.centery, (80, 220, 255))
-            )
+        mb_left_pressed=False
+        key_e_pressed=False
 
-        for e in pygame.event.get():
-            if e.type == pygame.QUIT:
+        for event in pygame.event.get():
+            if event.type==pygame.QUIT:
                 pygame.quit(); sys.exit()
+            if event.type==pygame.KEYDOWN:
+                if event.key==pygame.K_ESCAPE:
+                    pygame.quit(); sys.exit()
+                if state==S_TITLE and event.key in (pygame.K_SPACE,pygame.K_RETURN):
+                    pl,wave,is_boss,walls,obstacles,enemies,thrown,projectiles,particles,time_left=init_game()
+                    door_open=False; state=S_PLAY
+                elif state in (S_WIN,S_LOSE):
+                    if event.key==pygame.K_r:
+                        pl,wave,is_boss,walls,obstacles,enemies,thrown,projectiles,particles,time_left=init_game()
+                        door_open=False; state=S_PLAY
+                    elif event.key in (pygame.K_SPACE,pygame.K_RETURN):
+                        state=S_TITLE
+                elif state==S_PLAY and event.key==pygame.K_e:
+                    key_e_pressed=True
+                elif state==S_PLAY and event.key==pygame.K_r:
+                    key_r_pressed=True
+            if event.type==pygame.MOUSEBUTTONDOWN:
+                if event.button==1: mb_left_pressed=True
+                if event.button==3: mb_right_held=True
+            if event.type==pygame.MOUSEBUTTONUP:
+                if event.button==3: mb_right_held=False
 
-        keys = pygame.key.get_pressed()
+        # ── 타이틀 ──
+        if state==S_TITLE:
+            draw_title(screen,tick); pygame.display.flip(); continue
 
-        if keys[pygame.K_SPACE] and eat_cooldown <= 0:
-            eat_active   = 20
-            eat_cooldown = 60
-            eat_rings.append(EatRing(player.center, EAT_RANGE))
-            eat_rings.append(EatRing(player.center, EAT_RANGE * 0.6))
-
-        moving = False
-        if keys[pygame.K_LEFT]  and player.left  > 0:
-            player.x -= 5; moving = True; facing_left = True
-        if keys[pygame.K_RIGHT] and player.right < WIDTH:
-            player.x += 5; moving = True; facing_left = False
-
-        current_frames = walk_frames if moving else idle_frames
-        current_delay  = WALK_FRAME_DELAY if moving else IDLE_FRAME_DELAY
-
-        frame_timer += dt
-        if frame_timer >= current_delay:
-            frame_timer = 0
-            frame_index = (frame_index + 1) % len(current_frames)
-        frame_index = frame_index % len(current_frames)
-
-        yellow_on_screen = any(e[2] == "yellow" for e in enemies)
-        orange_on_screen = len(orange_pillars) > 0 or any(e[2] == "orange" for e in enemies)
-
-        yellow_unlocked = level_idx >= 2
-        special_unlocked = level_idx >= 4
-
-        spawn_timer += 1
-        if spawn_timer >= level_cfg["spawn"]:
-            spawn_timer = 0
-            roll = random.random()
-            if special_unlocked and roll < ORANGE_SPAWN_CHANCE and not orange_on_screen and not yellow_on_screen:
-                orange_pillars.append(OrangeWarningPillar(player))
-            elif special_unlocked and roll < ORANGE_SPAWN_CHANCE + PURPLE_SPAWN_CHANCE:
-                enemies.append(spawn_purple_enemy())
-            elif yellow_unlocked and roll < ORANGE_SPAWN_CHANCE + PURPLE_SPAWN_CHANCE + 0.2 and not orange_on_screen:
-                enemies.append(spawn_yellow_enemy())
+        # ── 결과 화면 ──
+        if state in (S_WIN,S_LOSE):
+            screen.fill(C_BG)
+            if state==S_WIN:
+                draw_overlay(screen,"CLEAR!",f"점수: {final_score}  |  R:재시작  ENTER:타이틀",C_HP_GREEN)
             else:
-                enemies.append(spawn_enemy(level_cfg))
+                draw_overlay(screen,"GAME OVER",f"점수: {final_score}  |  R:재시작  ENTER:타이틀",C_HP_RED)
+            pygame.display.flip(); continue
 
-        new_pillars = []
-        for pillar in orange_pillars:
-            if pillar.update():
-                new_pillars.append(pillar)
+        # ── 플레이 업데이트 ──
+        cam_x,cam_y=get_camera(pl)
+        time_left-=dt
+        if time_left<=0:
+            final_score=pl.score; state=S_LOSE
+
+        pl.update(keys,dt,walls,mx,my,cam_x,cam_y,
+                  enemies,particles,thrown,
+                  mb_left_pressed,mb_right_held,key_e_pressed,key_r_pressed)
+
+        # 투척 창 업데이트
+        for sp in thrown[:]:
+            sp.update(walls,enemies,particles,pl)
+            if not sp.alive: thrown.remove(sp)
+
+        # 적 업데이트
+        for e in enemies[:]:
+            if not e.alive:
+                spawn_particles(particles,e.cx,e.cy,e.color,20)
+                enemies.remove(e); continue
+            if isinstance(e,Boss):
+                e.update(pl,walls,particles,projectiles)
             else:
-                x = pillar.final_x
-                rect = pygame.Rect(x - ENEMY_W // 2, -ENEMY_H, ENEMY_W, ENEMY_H)
-                enemies.append([rect, 28, "orange", "dash", [0, 1], 0])
-        orange_pillars = new_pillars
+                e.update(pl,walls,particles)
 
-        item_spawn_timer += 1
-        if item_spawn_timer >= ITEM_SPAWN_INTERVAL:
-            item_spawn_timer = 0
-            if lives >= MAX_LIVES:
-                kind = "swirl" if random.random() < 0.4 else None
-            else:
-                kind = "heart" if random.random() < 0.8 else "swirl"
-            if kind:
-                items.append(Item(kind))
-
-        new_items = []
-        for item in items:
-            iid = id(item)
-            if eat_active > 0 and iid not in item_eaten:
-                dist = math.hypot(item.x - player.centerx,
-                                  item.y - player.centery)
-                if dist <= EAT_RANGE:
-                    item_eaten[iid] = item
-                    for _ in range(10):
-                        if item.kind == "heart":
-                            pcol = (255, 100, 140)
-                        else:
-                            pcol = (80, 200, 255)
-                        absorb_particles.append(
-                            AbsorbParticle(item.x, item.y, player, pcol))
-
-            if iid in item_eaten:
-                absorbed = item.pull_toward(player.centerx, player.centery)
-                if absorbed:
-                    if item.kind == "heart":
-                        lives = min(lives + 1, 9)
-                        SOUND_EAT_HP.play()
-                        flash_bursts.append(
-                            FlashBurst(player.centerx, player.centery, (255, 100, 140)))
-                        score_popups.append(
-                            ScorePopup(item.x, item.y - 10, "♥ +1", (255, 100, 140)))
-                    else:
-                        eat_boost_timer = FPS * 5
-                        eat_active = max(eat_active, 1)
-                        for _ in range(3):
-                            eat_rings.append(
-                                EatRing(player.center, EAT_RANGE * (1 + _ * 0.3)))
-                        flash_bursts.append(
-                            FlashBurst(player.centerx, player.centery, (80, 200, 255)))
-                        score_popups.append(
-                            ScorePopup(item.x, item.y - 10, "EAT x5s!", (80, 200, 255)))
-                    del item_eaten[iid]
-                    continue
+        # 보스 투사체
+        for p in projectiles[:]:
+            p.update(walls)
+            if not p.alive: projectiles.remove(p); continue
+            if dist(p.x,p.y,pl.cx,pl.cy)<16:
+                parried=pl.take_damage(15)
+                if parried:
+                    spawn_particles(particles,p.x,p.y,C_PARRY,10)
                 else:
-                    if item.update():
-                        new_items.append(item)
-                    else:
-                        del item_eaten[iid]
-            else:
-                if item.update():
-                    new_items.append(item)
-        items = new_items
+                    spawn_particles(particles,p.x,p.y,(180,80,255),8)
+                projectiles.remove(p)
 
-        survived = []
-        for e in enemies:
-            rect = e[0]
-            eid  = id(rect)
+        # 파티클
+        for pt in particles[:]:
+            pt.update()
+            if pt.life<=0: particles.remove(pt)
 
-            if eat_active > 0:
-                dist = math.hypot(rect.centerx - player.centerx,
-                                  rect.centery - player.centery)
-                if dist <= EAT_RANGE:
-                    if eid not in being_eaten:
-                        being_eaten[eid] = 0
-                        particle_color = (255, 100, 180)
-                        if e[2] == "purple":
-                            particle_color = (200, 80, 255)
-                        elif e[2] == "orange":
-                            particle_color = (255, 160, 40)
-                        for _ in range(8):
-                            absorb_particles.append(
-                                AbsorbParticle(rect.centerx, rect.centery,
-                                               player, particle_color))
+        # HP 체크
+        if pl.hp<=0:
+            final_score=pl.score; state=S_LOSE
 
-            if eid in being_eaten:
-                being_eaten[eid] += 1
-                dx = player.centerx - rect.centerx
-                dy = player.centery - rect.centery
-                d  = max(1, math.hypot(dx, dy))
-                pull = 6 + being_eaten[eid] * 0.8
-                rect.x += int(dx / d * pull)
-                rect.y += int(dy / d * pull)
+        # 문
+        door_open=len(enemies)==0
+        if door_open:
+            door_rect=pygame.Rect((ROOM_COLS-1)*TILE,(ROOM_ROWS//2-1)*TILE,TILE,TILE*2)
+            if pl.rect.colliderect(door_rect):
+                wave+=1; is_boss=(wave%3==0)
+                walls,obstacles=build_room(wave)
+                enemies=spawn_enemies(wave,is_boss,walls)
+                thrown.clear(); projectiles.clear()
+                time_left=TIME_LIMIT+wave*5
+                pl.x,pl.y=float(TILE*2+8),float(TILE*3)
+                pl.has_spear=True
+                pl.hp=min(pl.hp+20,pl.max_hp)
+                door_open=False
+                if wave>5:
+                    final_score=pl.score; state=S_WIN
 
-                if being_eaten[eid] >= EAT_PULL_TICKS or \
-                   math.hypot(rect.centerx - player.centerx,
-                               rect.centery - player.centery) < 20:
+        # ── 렌더링 ──
+        screen.fill(C_BG)
+        draw_room(screen,walls,obstacles,cam_x,cam_y,door_open)
 
-                    color_type = e[2]
+        for pt in particles:
+            if isinstance(pt,WindParticle): pt.draw(screen,cam_x,cam_y)
+            else: pt.draw(screen,cam_x,cam_y)
 
-                    if color_type == "purple":
-                        lives -= 1
-                        invincible = max(invincible, 90)
-                        shake_timer = 20
-                        shake_strength = 10
-                        for _ in range(25):
-                            purple_explosion_particles.append(
-                                PurpleExplosionParticle(player.centerx, player.centery))
-                        flash_bursts.append(
-                            FlashBurst(player.centerx, player.centery, (200, 80, 255)))
-                        score_popups.append(
-                            ScorePopup(rect.centerx, rect.centery - 10,
-                                       "BOOM! ♥-1", (200, 80, 255)))
-                        hunger = min(HUNGER_MAX, hunger + HUNGER_GAIN_PURPLE)
-                        if lives <= 0:
-                            del being_eaten[eid]
-                            if game_over_screen(score): main()
-                            return
+        for p in projectiles: p.draw(screen,cam_x,cam_y)
+        for sp in thrown:     sp.draw(screen,cam_x,cam_y)
+        for e in enemies:     e.draw(screen,cam_x,cam_y)
 
-                    elif color_type == "orange":
-                        eat_cooldown = 0
-                        gain = 10
-                        score += gain
-                        SOUND_EAT_ENEMY.play()
-                        last_gain = gain
-                        last_gain_timer = 90
-                        hunger = min(HUNGER_MAX, hunger + HUNGER_GAIN_ORANGE)
-                        flash_bursts.append(
-                            FlashBurst(player.centerx, player.centery, (255, 160, 40)))
-                        score_popups.append(
-                            ScorePopup(rect.centerx, rect.centery - 10,
-                                       f"+{gain} COOLDOWN!", (255, 160, 40)))
+        pl.draw(screen,cam_x,cam_y,particles)
+        draw_hud(screen,pl,time_left,wave,is_boss,len(enemies))
 
-                    else:
-                        is_red = color_type == "red"
-                        gain = 2 if is_red else 5
-                        score += gain
-                        SOUND_EAT_ENEMY.play()
-                        last_gain = gain
-                        last_gain_timer = 90
-                        hunger_gain = HUNGER_GAIN_RED if is_red else HUNGER_GAIN_YELLOW
-                        hunger = min(HUNGER_MAX, hunger + hunger_gain)
-                        flash_bursts.append(
-                            FlashBurst(player.centerx, player.centery, (255, 100, 180)))
-                        score_popups.append(
-                            ScorePopup(rect.centerx, rect.centery - 10,
-                                       f"+{gain}",
-                                       RED if is_red else YELLOW))
-
-                    del being_eaten[eid]
-                    continue
-            else:
-                if e[2] == "red":
-                    rect.y += e[1]
-                elif e[2] == "purple":
-                    rect.y += e[1]
-                elif e[2] == "yellow":
-                    if e[3] == "fall":
-                        rect.y += e[1]
-                        if rect.y > 150:
-                            e[3] = "warn"; e[5] = 0
-                    elif e[3] == "warn":
-                        e[5] += 1
-                        if e[5] > 30:
-                            dx = player.centerx - rect.centerx
-                            dy = player.centery - rect.centery
-                            d2 = max(1, (dx**2 + dy**2) ** 0.5)
-                            e[4] = [dx / d2, dy / d2]
-                            e[3] = "dash"
-                    elif e[3] == "dash":
-                        rect.x += int(e[4][0] * 10)
-                        rect.y += int(e[4][1] * 10)
-                elif e[2] == "orange":
-                    rect.y += e[1]
-
-            if rect.top < HEIGHT:
-                survived.append(e)
-            else:
-                if eid in being_eaten: del being_eaten[eid]
-                if e[2] == "red": score += 1
-
-        enemies = survived
-
-        new_enemies = []
-        for e in enemies:
-            rect = e[0]; eid = id(rect)
-            if eid in being_eaten:
-                new_enemies.append(e); continue
-            if invincible <= 0 and player.colliderect(rect):
-                SOUND_HIT.play()
-                
-                if e[2] == "purple":
-                    lives -= 1
-                    invincible = 90
-                    shake_timer = 20
-                    shake_strength = 10
-                    for _ in range(25):
-                        purple_explosion_particles.append(
-                            PurpleExplosionParticle(player.centerx, player.centery))
-                    flash_bursts.append(
-                        FlashBurst(player.centerx, player.centery, (200, 80, 255)))
-                    score_popups.append(
-                        ScorePopup(rect.centerx, rect.centery - 10,
-                                   "BOOM! ♥-1", (200, 80, 255)))
-                    being_eaten.clear()
-                    enemies.clear()
-                    if lives <= 0:
-                        if game_over_screen(score): main()
-                        return
-                    continue
-                else:
-                    if e[2] == "orange":
-                        lives -= 2
-                        shake_timer = 22
-                        shake_strength = 14
-                        score_popups.append(
-                            ScorePopup(rect.centerx, rect.centery - 10,
-                                       "♥♥ -2", (255, 140, 0)))
-                    else:
-                        lives -= 1
-                        shake_timer = 18
-                        shake_strength = 12
-                    invincible = 90
-                    being_eaten.clear(); enemies.clear()
-
-                    if lives <= 0:
-                        if game_over_screen(score): main()
-                        return
-                    continue
-            new_enemies.append(e)
-        enemies = new_enemies
-
-        new_level_idx = 0
-        for i, threshold in enumerate(LEVEL_SCORE_THRESHOLDS):
-            if score >= threshold:
-                new_level_idx = i
-        new_level_idx = min(new_level_idx, len(LEVELS) - 1)
-        if new_level_idx > level_idx:
-            level_up_banners.append(LevelUpBanner(LEVELS[new_level_idx]['label']))
-            
-            SOUND_LEVELUP.play()
-
-            if new_level_idx == 9:  # Lv.10
-                pygame.mixer.music.load(BGM_LV10)
-                pygame.mixer.music.play(-1)
-        
-        level_idx = new_level_idx
-        level_cfg = LEVELS[level_idx]
-        
-        
-
-        hunger -= HUNGER_DRAIN_BY_LEVEL[level_idx]
-        hunger = max(0, hunger)
-
-        if hunger <= 0:
-            if game_over_screen(score): main()
-            return
-
-        if last_gain_timer > 0: last_gain_timer -= 1
-        else:                   last_gain = 0
-
-        if shake_timer > 0:
-            shake_timer -= 1
-
-        level_up_banners          = [b for b in level_up_banners          if b.update()]
-        absorb_particles          = [p for p in absorb_particles          if p.update()]
-        score_popups              = [p for p in score_popups              if p.update()]
-        eat_rings                 = [r for r in eat_rings                 if r.update()]
-        flash_bursts              = [f for f in flash_bursts              if f.update()]
-        purple_explosion_particles = [p for p in purple_explosion_particles if p.update()]
-
-        game_surface.fill(GRAY)
-
-        for pillar in orange_pillars:
-            pillar.draw(game_surface)
-
-        for ring in eat_rings:
-            ring.draw(game_surface)
-
-        for item in items:
-            item.draw(game_surface)
-
-        blink = (invincible // 10) % 2 == 0
-        if blink:
-            raw_frame = current_frames[frame_index]
-            frame_img = pygame.transform.scale(raw_frame, (player.width, player.height))
-            if facing_left:
-                frame_img = pygame.transform.flip(frame_img, True, False)
-            game_surface.blit(frame_img, player.topleft)
-
-            if eat_active > 0:
-                pulse = int((1.0 - (eat_active % 20) / 20) * 10)
-                ec = (80, 220, 255) if eat_boost_timer > 0 else (255, 100, 180)
-                pygame.draw.circle(game_surface, ec, player.center, EAT_RANGE + pulse, 1)
-                s = pygame.Surface((EAT_RANGE * 2, EAT_RANGE * 2), pygame.SRCALPHA)
-                fill_c = (*ec, 30)
-                pygame.draw.circle(s, fill_c, (EAT_RANGE, EAT_RANGE), EAT_RANGE)
-                game_surface.blit(s, (player.centerx - EAT_RANGE,
-                                      player.centery - EAT_RANGE))
-
-        for e in enemies:
-            eid  = id(e[0])
-            rect = e[0]
-            color_type = e[2]
-
-            if color_type == "purple":
-                base_color = PURPLE
-            elif color_type == "orange":
-                base_color = ORANGE
-            elif color_type == "red":
-                base_color = RED
-            else:
-                base_color = YELLOW
-
-            if eid in being_eaten:
-                progress = being_eaten[eid] / EAT_PULL_TICKS
-                scale    = max(0.2, 1.0 - progress * 0.8)
-                w = max(1, int(rect.width  * scale))
-                h = max(1, int(rect.height * scale))
-
-                if color_type == "purple":
-                    r_shrink = max(1, int(min(w, h) // 2))
-                    ps = pygame.Surface((r_shrink*2+2, r_shrink*2+2), pygame.SRCALPHA)
-                    pulse_alpha = int(200 + 55 * math.sin(pygame.time.get_ticks() * 0.03))
-                    pygame.draw.circle(ps, (*PURPLE, pulse_alpha),
-                                       (r_shrink+1, r_shrink+1), r_shrink)
-                    game_surface.blit(ps, (rect.centerx - r_shrink - 1,
-                                           rect.centery - r_shrink - 1))
-                else:
-                    pygame.draw.rect(game_surface, base_color,
-                                     pygame.Rect(rect.centerx - w//2,
-                                                 rect.centery - h//2, w, h))
-            else:
-                if color_type == "purple":
-                    r = ENEMY_W // 2
-                    tick_v = pygame.time.get_ticks()
-                    pulse = int(3 * math.sin(tick_v * 0.008))
-                    pygame.draw.circle(game_surface, PURPLE, rect.center, r + pulse)
-                    pygame.draw.circle(game_surface, (220, 150, 255), rect.center, r + pulse, 2)
-                    cx2, cy2 = rect.center
-                    sz = 6
-                    pygame.draw.line(game_surface, (255, 220, 255),
-                                     (cx2-sz, cy2-sz), (cx2+sz, cy2+sz), 2)
-                    pygame.draw.line(game_surface, (255, 220, 255),
-                                     (cx2+sz, cy2-sz), (cx2-sz, cy2+sz), 2)
-
-                elif color_type == "orange":
-                    r = ENEMY_W // 2
-                    trail_len = 30
-                    trail_s = pygame.Surface((ENEMY_W + 4, trail_len), pygame.SRCALPHA)
-                    for t in range(trail_len):
-                        alpha_t = int(150 * (1 - t / trail_len))
-                        w_t = max(1, int((ENEMY_W - 4) * (1 - t / trail_len)))
-                        pygame.draw.rect(trail_s, (255, 140 + t*2, 0, alpha_t),
-                                         (ENEMY_W // 2 - w_t // 2 + 2, t, w_t, 2))
-                    game_surface.blit(trail_s, (rect.left - 2, rect.top - trail_len))
-                    pygame.draw.circle(game_surface, ORANGE, rect.center, r)
-                    pygame.draw.circle(game_surface, (255, 220, 80), rect.center, r, 2)
-                    cx2, cy2 = rect.center
-                    bolt = [(cx2+2, cy2-8), (cx2-2, cy2-1), (cx2+3, cy2-1), (cx2-3, cy2+8)]
-                    pygame.draw.lines(game_surface, (255, 255, 180), False, bolt, 2)
-
-                elif color_type == "yellow":
-                    if e[3] == "warn":
-                        if (e[5] // 5) % 2 == 0:
-                            pygame.draw.rect(game_surface, YELLOW, rect)
-                        draw_dashed_line(game_surface, YELLOW, rect.center,
-                                         player.center, dash_length=8)
-                    else:
-                        pygame.draw.rect(game_surface, YELLOW, rect)
-                else:
-                    pygame.draw.rect(game_surface, RED, rect)
-
-        for p in absorb_particles:
-            p.draw(game_surface)
-        for p in purple_explosion_particles:
-            p.draw(game_surface)
-        for f in flash_bursts:
-            f.draw(game_surface)
-        for popup in score_popups:
-            popup.draw(game_surface)
-        for banner in level_up_banners:
-            banner.draw(game_surface)
-
-        draw_hud(game_surface, score, last_gain, level_cfg, lives, eat_cooldown, player,
-                 eat_boost_timer, hunger)
-
-        screen.fill(BLACK)
-        shake_x, shake_y = 0, 0
-        if shake_timer > 0:
-            shake_x = random.randint(-shake_strength, shake_strength)
-            shake_y = random.randint(-shake_strength, shake_strength)
-
-        screen.blit(game_surface, (shake_x, shake_y))
-        pygame.display.flip()
-
-def title_screen():
-    pygame.mixer.music.load(BGM_TITLE)
-    pygame.mixer.music.play(-1)
-    
-    font_title = get_korean_font(80)
-    font_sub   = get_korean_font(32)
-    font_guide = get_korean_font(26)
-    PINK = (255, 100, 180)
-    DIM  = (160, 160, 160)
-    tick = 0
-
-    while True:
-        clock.tick(FPS)
-        tick += 1
-
-        for e in pygame.event.get():
-            if e.type == pygame.QUIT: pygame.quit(); sys.exit()
-            if e.type == pygame.KEYDOWN and e.key == pygame.K_r: return
-
-        # 캔디랜드 배경 이미지 그리기
-        screen.blit(TITLE_BG, (0, 0))
-
-        # 반투명 어두운 오버레이 (텍스트 가독성 향상)
-        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 100))
-        screen.blit(overlay, (0, 0))
-
-        # 타이틀 - 두꺼운 윤곽선 텍스트 (두번째 이미지 스타일)
-        title_txt = "Hungry Slime"
-        title_surf = font_title.render(title_txt, True, PINK)
-        tx = WIDTH // 2 - title_surf.get_width() // 2
-        ty = 110 + int(math.sin(tick * 0.05) * 6)
-        draw_outlined_text(screen, font_title, title_txt, PINK, (100, 0, 60), tx, ty, outline_width=5)
-        # 타이틀 아래 핑크 라인
-        pygame.draw.line(screen, PINK,
-                         (tx, ty + title_surf.get_height() + 4),
-                         (tx + title_surf.get_width(), ty + title_surf.get_height() + 4), 3)
-
-        # PRESS R 깜빡임 - 윤곽선
-        if (tick // 30) % 2 == 0:
-            draw_outlined_text_centered(screen, font_sub, "Press  R  to  Game Start",
-                                        WHITE, BLACK, WIDTH // 2, 260, outline_width=3)
-
-        # 가이드 배경 패널
-        panel_h = 4 * 44 + 20
-        panel_y = 320
-        panel_s = pygame.Surface((500, panel_h), pygame.SRCALPHA)
-        panel_s.fill((0, 0, 0, 140))
-        # 둥근 패널 느낌으로 테두리
-        pygame.draw.rect(panel_s, (255, 100, 180, 180), (0, 0, 500, panel_h), 3, border_radius=12)
-        screen.blit(panel_s, (WIDTH // 2 - 250, panel_y - 10))
-
-        guides = [
-            ("←  →",  "방향키로 이동"),
-            ("SPACE",  "먹기"),
-            ("보라색", "먹으면 폭발! ♥-1"),
-            ("주황색", "3초 후 낙하! 먹으면 쿨타임 초기화"),
-        ]
-        base_y = panel_y
-        for i, (key_txt, desc_txt) in enumerate(guides):
-            y  = base_y + i * 44
-            ks_w = font_guide.size(key_txt)[0]
-            sep_w = font_guide.size("  :  ")[0]
-            ds_w = font_guide.size(desc_txt)[0]
-            total_w = ks_w + sep_w + ds_w
-            x = WIDTH // 2 - total_w // 2
-            draw_outlined_text(screen, font_guide, key_txt, PINK, (100, 0, 60), x, y, outline_width=2)
-            draw_outlined_text(screen, font_guide, "  :  ", DIM, BLACK, x + ks_w, y, outline_width=2)
-            draw_outlined_text(screen, font_guide, desc_txt, WHITE, BLACK, x + ks_w + sep_w, y, outline_width=2)
+        # 웨이브 알림
+        if time_left>TIME_LIMIT+wave*5-2.5:
+            fnt=pixel_font(30)
+            msg=f"WAVE {wave}"+(" - BOSS!" if is_boss else "")
+            draw_text_shadow(screen,msg,fnt,C_GOLD,SCREEN_W//2-fnt.size(msg)[0]//2,SCREEN_H//2-20)
 
         pygame.display.flip()
 
-title_screen()
-main()
+if __name__=="__main__":
+    game_loop()
