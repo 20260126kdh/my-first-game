@@ -1,0 +1,728 @@
+"""
+⚔️  SPEAR SURVIVORS  ⚔️
+창술 뱀서류 — 넓은 맵, 화면 밖 스폰, 웨이브 생존
+
+조작:
+  WASD / 방향키  — 이동
+  좌클릭         — 찌르기 (마우스 방향, 풍압 이펙트)
+  우클릭 홀드    — 창 돌리기 → 0.5초 후 패링 준비
+                    패링 중 피격 → 강화 카운터 대기
+                    카운터 대기 중 좌클릭 → 카운터!
+  E              — 창 투척 (적에게 박힘)
+  R              — 창 회수
+  ESC            — 종료
+"""
+
+import pygame, math, random, sys
+
+# ───────────── 상수 ─────────────
+SW, SH   = 960, 600
+FPS      = 60
+MAP_W    = 4800
+MAP_H    = 4800
+TILE     = 48
+
+# 팔레트
+C_BG=(15,12,22); C_FL=(42,35,55); C_FL2=(36,29,48)
+C_WALL=(25,20,38); C_WTOP=(60,48,78)
+C_PLR=(100,200,240); C_PSH=(60,140,180)
+C_SPEAR=(240,220,100)
+C_PARRY=(120,220,255); C_COUNTER=(255,120,30)
+C_WIND=(180,230,255)
+C_GOLD=(255,210,50); C_WHITE=(255,255,255); C_DARK=(0,0,0)
+C_RED=(220,50,50); C_GRN=(80,200,100); C_HPBK=(40,20,20)
+C_SHADOW=(10,8,16)
+
+# 플레이어
+PLR_SPD=4; PLR_HP=150
+# 찌르기
+ST_DMG=35; ST_RNG=95; ST_CD=18; ST_FR=10
+# 패링
+SPIN_T=0.5; PARRY_W=50; CTR_DMG=85; CTR_RNG=115
+# 투척
+TH_SPD=14; TH_RNG=520; TH_DMG=48; TH_CD=28
+# 적 기본값
+SPAWN_MARGIN=90   # 화면 밖 스폰 여백(px)
+
+ENEMY_TABLE=[
+    {"n":"슬라임","hp":55,"spd":1.4,"dmg":8,"sz":17,"col":(80,180,80),"sh":(40,110,40),"sc":10},
+    {"n":"해골",  "hp":85,"spd":2.3,"dmg":13,"sz":15,"col":(190,190,190),"sh":(110,110,110),"sc":20},
+    {"n":"오우거","hp":160,"spd":1.1,"dmg":22,"sz":27,"col":(100,180,80),"sh":(55,110,40),"sc":40},
+    {"n":"흡혈귀","hp":110,"spd":2.0,"dmg":16,"sz":18,"col":(180,40,200),"sh":(110,20,130),"sc":35},
+]
+BOSS_D={"n":"암흑 군주","hp":500,"spd":1.7,"dmg":28,"sz":38,
+        "col":(200,60,200),"sh":(120,20,130),"sc":250}
+
+# ───────────── 유틸 ─────────────
+dist = lambda ax,ay,bx,by: math.hypot(ax-bx,ay-by)
+norm = lambda dx,dy: (0,0) if (h:=math.hypot(dx,dy))==0 else (dx/h,dy/h)
+pfont= lambda s: pygame.font.SysFont("monospace",s,bold=True)
+
+def tsh(surf,txt,fnt,col,x,y):
+    surf.blit(fnt.render(txt,False,C_SHADOW),(x+2,y+2))
+    surf.blit(fnt.render(txt,False,col),(x,y))
+
+def hbar(surf,x,y,w,h,v,mx,cf):
+    pygame.draw.rect(surf,C_HPBK,(x,y,w,h))
+    f=int(w*max(0,v)/max(1,mx))
+    if f: pygame.draw.rect(surf,cf,(x,y,f,h))
+    pygame.draw.rect(surf,C_WHITE,(x,y,w,h),1)
+
+# ───────────── 파티클 ─────────────
+class Particle:
+    __slots__=("x","y","vx","vy","life","ml","sz","col")
+    def __init__(self,x,y,col,vx,vy,life=28,sz=4):
+        self.x=x;self.y=y;self.col=col;self.vx=vx;self.vy=vy
+        self.life=self.ml=life;self.sz=sz
+    def update(self):
+        self.x+=self.vx;self.y+=self.vy;self.vy+=0.12;self.life-=1
+    def draw(self,surf,cx,cy):
+        a=self.life/self.ml; r=max(1,int(self.sz*a))
+        c=tuple(int(v*a) for v in self.col)
+        pygame.draw.rect(surf,c,(int(self.x-cx)-r//2,int(self.y-cy)-r//2,r,r))
+
+class WindP:
+    __slots__=("x","y","vx","vy","life","ml","length","angle")
+    def __init__(self,x,y,angle):
+        sp=random.uniform(-0.35,0.35); s=random.uniform(5,10)
+        self.x=float(x);self.y=float(y)
+        self.vx=math.cos(angle+sp)*s;self.vy=math.sin(angle+sp)*s
+        self.life=self.ml=random.randint(8,16)
+        self.length=random.randint(10,22);self.angle=angle+sp
+    def update(self):
+        self.x+=self.vx;self.y+=self.vy;self.vx*=0.85;self.vy*=0.85;self.life-=1
+    def draw(self,surf,cx,cy):
+        a=self.life/self.ml; c=tuple(int(v*a) for v in C_WIND)
+        bx,by=int(self.x-cx),int(self.y-cy)
+        ex=bx+int(math.cos(self.angle)*self.length*a)
+        ey=by+int(math.sin(self.angle)*self.length*a)
+        pygame.draw.line(surf,c,(bx,by),(ex,ey),2)
+
+def sparks(ps,x,y,col,n=10):
+    for _ in range(n):
+        a=random.uniform(0,math.tau); s=random.uniform(1,4)
+        ps.append(Particle(x,y,col,math.cos(a)*s,math.sin(a)*s-1,
+                           life=random.randint(18,38),sz=random.randint(3,7)))
+
+# ───────────── 박힌 창 ─────────────
+class StuckSpear:
+    def __init__(self,ox,oy,angle): self.ox=ox;self.oy=oy;self.angle=angle
+    def draw(self,surf,ex,ey,cx,cy):
+        sx=int(ex-cx);sy=int(ey-cy); a=self.angle; L=26
+        pygame.draw.line(surf,(160,120,60),(sx-int(math.cos(a)*18),sy-int(math.sin(a)*18)),(sx,sy),3)
+        pygame.draw.line(surf,C_SPEAR,(sx,sy),(sx+int(math.cos(a)*L),sy+int(math.sin(a)*L)),3)
+
+# ───────────── 투척 창 ─────────────
+class ThrownSpear:
+    def __init__(self,x,y,angle):
+        self.x=float(x);self.y=float(y);self.angle=angle
+        self.vx=math.cos(angle)*TH_SPD;self.vy=math.sin(angle)*TH_SPD
+        self.traveled=0;self.alive=True
+    def update(self,enemies,ps,pl):
+        self.x+=self.vx;self.y+=self.vy;self.traveled+=TH_SPD
+        if self.traveled>TH_RNG: self.alive=False; return
+        for e in enemies:
+            if e.alive and dist(self.x,self.y,e.cx,e.cy)<e.sz+6:
+                e.take_dmg(TH_DMG); sparks(ps,e.cx,e.cy,e.col,14)
+                if not e.alive: pl.score+=e.sc
+                if e.alive:
+                    e.stuck.append(StuckSpear(self.x-e.cx,self.y-e.cy,self.angle))
+                self.alive=False; return
+    def draw(self,surf,cx,cy):
+        sx=int(self.x-cx);sy=int(self.y-cy); a=self.angle
+        pygame.draw.line(surf,(160,120,60),(sx-int(math.cos(a)*18),sy-int(math.sin(a)*18)),(sx,sy),3)
+        pygame.draw.line(surf,C_SPEAR,(sx,sy),(sx+int(math.cos(a)*26),sy+int(math.sin(a)*26)),3)
+
+# ───────────── 공격 상태 ─────────────
+AN=0; AS=1; ASPIN=2; AP=3; AC=4  # None/Stab/Spin/Parried/Counter
+
+class Player:
+    def __init__(self):
+        self.x=MAP_W/2; self.y=MAP_H/2
+        self.w=24; self.h=32
+        self.hp=PLR_HP; self.mhp=PLR_HP
+        self.inv=0; self.score=0; self.kills=0
+        self.facing=1; self.bob=0
+        self.astate=AN; self.st_fr=0; self.st_ang=0
+        self.spin_t=0.0; self.par_fr=0
+        self.ct_fr=0; self.ct_ang=0
+        self.th_cd=0; self.st_cd=0
+        self.sp_ang=0.0; self.has_spear=True
+        self.enhanced=False
+        self.dash_vx=0.0; self.dash_vy=0.0; self.dash_fr=0
+        self.dash_trail=[]; self.dash_hits=set()
+
+    @property
+    def cx(self): return self.x+self.w/2
+    @property
+    def cy(self): return self.y+self.h/2
+
+    def update(self,keys,dt,mx,my,cam_x,cam_y,enemies,ps,thrown,
+               ml,mr,ke,kr):
+        wx=mx+cam_x; wy=my+cam_y
+        self.sp_ang=math.atan2(wy-self.cy,wx-self.cx)
+        self.facing=1 if wx>=self.cx else -1
+
+        # 이동
+        dx=dy=0
+        if keys[pygame.K_a]or keys[pygame.K_LEFT]: dx-=PLR_SPD
+        if keys[pygame.K_d]or keys[pygame.K_RIGHT]: dx+=PLR_SPD
+        if keys[pygame.K_w]or keys[pygame.K_UP]: dy-=PLR_SPD
+        if keys[pygame.K_s]or keys[pygame.K_DOWN]: dy+=PLR_SPD
+        if dx and dy: dx*=0.707;dy*=0.707
+        self.x=max(0,min(MAP_W-self.w,self.x+dx))
+        self.y=max(0,min(MAP_H-self.h,self.y+dy))
+        self.bob=(self.bob+1)%12 if dx or dy else 0
+
+        if self.st_cd>0: self.st_cd-=1
+        if self.th_cd>0: self.th_cd-=1
+        if self.inv>0:   self.inv-=1
+        if kr and not self.has_spear: self.has_spear=True
+
+        if self.dash_fr>0:
+            self.x=max(0,min(MAP_W-self.w,self.x+self.dash_vx))
+            self.y=max(0,min(MAP_H-self.h,self.y+self.dash_vy))
+            self.dash_fr-=1
+            self.dash_trail.append((self.x,self.y))
+            self.dash_trail=self.dash_trail[-8:]
+
+        self._atk(dt,ml,mr,ke,mx,my,cam_x,cam_y,enemies,ps,thrown)
+
+    def _atk(self,dt,ml,mr,ke,mx,my,cx,cy,enemies,ps,thrown):
+        s=self.astate
+        if s==AN:
+            if ke and self.has_spear and self.th_cd==0:
+                wx=mx+cx;wy=my+cy
+                thrown.append(ThrownSpear(self.cx,self.cy,math.atan2(wy-self.cy,wx-self.cx)))
+                self.has_spear=False; self.th_cd=TH_CD
+            elif ml and self.st_cd==0 and self.has_spear:
+                self.astate=AS; self.st_fr=ST_FR; self.st_ang=self.sp_ang
+                self._stab(enemies,ps)
+            elif mr:
+                self.astate=ASPIN; self.spin_t=0.0
+        elif s==AS:
+            self.st_fr-=1
+            if self.st_fr<=0: self.astate=AN; self.st_cd=ST_CD
+        elif s==ASPIN:
+            if not mr: self.astate=AN; self.spin_t=0.0; self.enhanced=False
+            else:
+                self.spin_t+=dt
+                if self.spin_t>=SPIN_T:
+                    self.astate=AP; self.par_fr=PARRY_W
+                    sparks(ps,self.cx,self.cy,(255,60,60) if self.enhanced else C_PARRY,20)
+        elif s==AP:
+            self.par_fr-=1
+            if self.par_fr<=0: self.astate=AN; self.enhanced=False
+            elif ml:
+                enh=self.enhanced
+                self.astate=AC; self.ct_fr=14; self.ct_ang=self.sp_ang
+                self._counter(enemies,ps)
+                if enh:
+                    self.dash_fr=12
+                    self.dash_vx=math.cos(self.ct_ang)*18
+                    self.dash_vy=math.sin(self.ct_ang)*18
+                    self.dash_hits=set()
+                self.enhanced=False
+        elif s==AC:
+            if self.dash_fr>0:
+                for e in enemies:
+                    if e.alive and id(e) not in self.dash_hits and dist(self.cx,self.cy,e.cx,e.cy)<e.sz+24:
+                        e.take_dmg(130); self.dash_hits.add(id(e))
+            self.ct_fr-=1
+            if self.ct_fr<=0: self.astate=AN; self.st_cd=ST_CD//2
+
+    def _stab(self,enemies,ps):
+        a=self.st_ang
+        for _ in range(14): ps.append(WindP(self.cx+math.cos(a)*30,self.cy+math.sin(a)*30,a))
+        for e in enemies:
+            if not e.alive: continue
+            dx=e.cx-self.cx;dy=e.cy-self.cy;d=math.hypot(dx,dy)
+            if d<ST_RNG:
+                diff=abs((math.atan2(dy,dx)-a+math.pi)%(math.tau)-math.pi)
+                if diff<0.6: e.take_dmg(ST_DMG); sparks(ps,e.cx,e.cy,e.col,10)
+
+    def _counter(self,enemies,ps):
+        a=self.ct_ang
+        dmg=int(CTR_DMG*(1.8 if self.enhanced else 1.0))
+        rng=int(CTR_RNG*(1.8 if self.enhanced else 1.0))
+        cc=(255,40,40) if self.enhanced else C_COUNTER
+        sparks(ps,self.cx,self.cy,cc,28 if self.enhanced else 20)
+        for _ in range(30 if self.enhanced else 20):
+            ps.append(WindP(self.cx+math.cos(a)*40,self.cy+math.sin(a)*40,a))
+        arc=1.1 if self.enhanced else 0.9
+        for e in enemies:
+            if not e.alive: continue
+            if dist(self.cx,self.cy,e.cx,e.cy)<rng:
+                diff=abs((math.atan2(e.cy-self.cy,e.cx-self.cx)-a+math.pi)%(math.tau)-math.pi)
+                if diff<arc: e.take_dmg(dmg); sparks(ps,e.cx,e.cy,cc,18)
+
+    def take_dmg(self,dmg,ps):
+        if self.inv>0: return False
+        if self.astate in (ASPIN,AP):
+            if self.astate==ASPIN and self.spin_t>=0.15:
+                self.astate=AP; self.par_fr=PARRY_W; self.enhanced=True
+            return True
+        self.hp-=dmg; self.inv=60
+        return False
+
+    # ── 렌더 ──
+    def draw(self,surf,cx,cy,ps):
+        if self.inv>0 and (self.inv//4)%2==0: return
+        sx=int(self.x-cx); sy=int(self.y-cy)
+        by=int(math.sin(self.bob/6*math.pi)*2)
+        lo=int(math.sin(self.bob/6*math.pi)*4)
+
+        for i,(tx,ty) in enumerate(self.dash_trail):
+            a=(i+1)/max(1,len(self.dash_trail))
+            pygame.draw.rect(surf,(int(255*a),40,40),(int(tx-cx),int(ty-cy),12,12))
+
+        # 다리
+        pygame.draw.rect(surf,C_PSH,(sx+4,sy+22-by+lo,7,10))
+        pygame.draw.rect(surf,C_PSH,(sx+13,sy+22-by-lo,7,10))
+        # 몸·머리
+        pygame.draw.rect(surf,C_PLR,(sx+2,sy+8-by,self.w-4,16))
+        pygame.draw.rect(surf,(230,190,150),(sx+5,sy-by,14,12))
+        pygame.draw.rect(surf,C_DARK,(sx+(13 if self.facing>0 else 7),sy+3-by,3,3))
+
+        px=sx+self.w//2; py=sy+self.h//2-2
+        s=self.astate; a=self.sp_ang
+
+        if s==ASPIN:
+            sa=self.spin_t/SPIN_T*math.tau+a
+            bc=(255,80,80) if self.enhanced else C_SPEAR
+            for i in range(8):
+                ga=sa+i*(math.tau/8); ar=1-i/8
+                gc=tuple(int(v*ar*0.85) for v in bc)
+                ox=int(math.cos(ga)*21); oy=int(math.sin(ga)*21)
+                self._draw_sp(surf,px+ox,py+oy,ga,gc,42)
+            self._draw_sp(surf,px,py,sa,bc,46)
+            if self.enhanced:
+                prog=min(self.spin_t/SPIN_T,1.0); rr=int(50*prog)
+                if rr>2:
+                    rs=pygame.Surface((rr*2+4,rr*2+4),pygame.SRCALPHA)
+                    pygame.draw.circle(rs,(255,60,60,int(140*prog)),(rr+2,rr+2),rr,3)
+                    surf.blit(rs,(px-rr-2,py-rr-2))
+        elif s==AP:
+            j=math.sin(self.par_fr*0.8)*4
+            pc=(255,80,80) if self.enhanced else C_PARRY
+            self._draw_sp(surf,px+int(j),py,a,pc,48)
+            prog=self.par_fr/PARRY_W; rg=int(28*prog)
+            if rg>0:
+                gs=pygame.Surface((rg*2,rg*2),pygame.SRCALPHA)
+                pygame.draw.circle(gs,(*pc,int(90*prog)),(rg,rg),rg)
+                surf.blit(gs,(px-rg,py-rg))
+        elif s==AS:
+            prog=1-self.st_fr/ST_FR; ext=int(36*math.sin(prog*math.pi))
+            self._draw_sp(surf,px+int(math.cos(self.st_ang)*ext),
+                          py+int(math.sin(self.st_ang)*ext),self.st_ang,C_SPEAR,46)
+        elif s==AC:
+            cc=(255,40,40) if self.enhanced else C_COUNTER
+            rng=int(CTR_RNG*(1.8 if self.enhanced else 1.0))
+            prog=1-self.ct_fr/14; ext=int((60 if self.enhanced else 45)*math.sin(prog*math.pi))
+            self._draw_sp(surf,px+int(math.cos(self.ct_ang)*ext),
+                          py+int(math.sin(self.ct_ang)*ext),self.ct_ang,cc,
+                          56 if self.enhanced else 46)
+            aw=1.1 if self.enhanced else 0.8
+            pts=[(px,py)]
+            for i in range(15):
+                aa=self.ct_ang-aw+(aw*2)*i/14
+                r=int(rng*prog)
+                pts.append((px+int(math.cos(aa)*r),py+int(math.sin(aa)*r)))
+            if len(pts)>=3:
+                cs=pygame.Surface((SW,SH),pygame.SRCALPHA)
+                pygame.draw.polygon(cs,(*cc,int(130*math.sin(prog*math.pi))),pts)
+                surf.blit(cs,(0,0))
+        else:
+            if self.has_spear: self._draw_sp(surf,px,py,a,C_SPEAR,44)
+
+    def _draw_sp(self,surf,px,py,a,col,L=44):
+        t=(px-int(math.cos(a)*24),py-int(math.sin(a)*24))
+        ti=(px+int(math.cos(a)*L),py+int(math.sin(a)*L))
+        pygame.draw.line(surf,(140,100,50),t,(px,py),3)
+        pygame.draw.line(surf,col,(px,py),ti,3)
+        p=a+math.pi/2
+        pygame.draw.polygon(surf,col,[ti,
+            (ti[0]-int(math.cos(a)*10)+int(math.cos(p)*5),ti[1]-int(math.sin(a)*10)+int(math.sin(p)*5)),
+            (ti[0]-int(math.cos(a)*10)-int(math.cos(p)*5),ti[1]-int(math.sin(a)*10)-int(math.sin(p)*5))])
+
+# ───────────── 적 ─────────────
+class Enemy:
+    def __init__(self,x,y,d):
+        self.x=float(x);self.y=float(y)
+        self.sz=d["sz"];self.hp=d["hp"];self.mhp=d["hp"]
+        self.spd=d["spd"];self.dmg=d["dmg"]
+        self.col=d["col"];self.sh=d["sh"]
+        self.n=d["n"];self.sc=d["sc"]
+        self.alive=True;self.stun=0;self.bob=random.randint(0,12)
+        self.stuck=[]
+    @property
+    def cx(self): return self.x
+    @property
+    def cy(self): return self.y
+
+    def update(self,pl,ps):
+        self.bob=(self.bob+1)%12
+        if self.stun>0: self.stun-=1; return
+        dx,dy=pl.cx-self.cx,pl.cy-self.cy
+        ndx,ndy=norm(dx,dy)
+        self.x=max(self.sz,min(MAP_W-self.sz,self.x+ndx*self.spd))
+        self.y=max(self.sz,min(MAP_H-self.sz,self.y+ndy*self.spd))
+        if dist(self.cx,self.cy,pl.cx,pl.cy)<self.sz+14:
+            if pl.take_dmg(self.dmg,ps): sparks(ps,self.cx,self.cy,C_PARRY,12)
+
+    def take_dmg(self,dmg):
+        self.hp-=dmg;self.stun=12
+        if self.hp<=0: self.alive=False
+
+    def draw(self,surf,cx,cy):
+        sx=int(self.x-cx);sy=int(self.y-cy); s=self.sz
+        by=int(math.sin(self.bob/6*math.pi)*2)
+        pygame.draw.ellipse(surf,(0,0,0),(sx-s+2,sy+s-4,s*2-4,8))
+        pygame.draw.rect(surf,self.sh,(sx-s+2,sy-s+2-by,s*2,s*2))
+        pygame.draw.rect(surf,self.col,(sx-s,sy-s-by,s*2,s*2))
+        pygame.draw.rect(surf,(255,50,50),(sx-4,sy-s+4-by,4,4))
+        pygame.draw.rect(surf,(255,50,50),(sx+1,sy-s+4-by,4,4))
+        hbar(surf,sx-s,sy-s-by-10,s*2,5,self.hp,self.mhp,C_RED)
+        for sp in self.stuck: sp.draw(surf,self.cx,self.cy,cx,cy)
+
+class Boss(Enemy):
+    def __init__(self,x,y):
+        super().__init__(x,y,BOSS_D); self.phase=1; self.sh_t=0
+    def update(self,pl,ps,proj):
+        if self.hp<self.mhp*0.5 and self.phase==1:
+            self.phase=2; self.spd*=1.5
+        super().update(pl,ps)
+        self.sh_t-=1
+        if self.sh_t<=0:
+            self.sh_t=70 if self.phase==1 else 45
+            dx,dy=pl.cx-self.cx,pl.cy-self.cy; b=math.atan2(dy,dx)
+            for off in [-0.3,0,0.3]: proj.append(BossProj(self.cx,self.cy,b+off))
+    def draw(self,surf,cx,cy):
+        sx=int(self.x-cx);sy=int(self.y-cy);s=self.sz
+        by=int(math.sin(self.bob/6*math.pi)*3)
+        cl=(80,20,80) if self.phase==1 else (120,20,20)
+        pygame.draw.rect(surf,cl,(sx-s-4,sy-s+8-by,s*2+8,s*2))
+        pygame.draw.rect(surf,self.sh,(sx-s+2,sy-s+2-by,s*2,s*2))
+        pygame.draw.rect(surf,self.col,(sx-s,sy-s-by,s*2,s*2))
+        cc=C_GOLD if self.phase==1 else (255,80,80)
+        for i in range(5):
+            h=8 if i%2==0 else 5
+            pygame.draw.rect(surf,cc,(sx-s+i*14,sy-s-8-by,10,h))
+        ec=(200,100,255) if self.phase==1 else (255,50,50)
+        pygame.draw.rect(surf,ec,(sx-8,sy-s+6-by,6,6))
+        pygame.draw.rect(surf,ec,(sx+3,sy-s+6-by,6,6))
+        hbar(surf,sx-s*2,sy-s-by-14,s*4,8,self.hp,self.mhp,
+             (200,60,200) if self.phase==1 else (255,60,60))
+        fn=pfont(13)
+        tsh(surf,f"BOSS"+(" [2P]" if self.phase==2 else ""),fn,self.col,sx-s*2,sy-s-by-28)
+        for sp in self.stuck: sp.draw(surf,self.cx,self.cy,cx,cy)
+
+class BossProj:
+    def __init__(self,x,y,a):
+        self.x=float(x);self.y=float(y)
+        self.vx=math.cos(a)*5;self.vy=math.sin(a)*5
+        self.alive=True;self.t=0
+    def update(self):
+        self.x+=self.vx;self.y+=self.vy;self.t+=5
+        if self.t>600 or not(0<self.x<MAP_W and 0<self.y<MAP_H): self.alive=False
+    def draw(self,surf,cx,cy):
+        sx,sy=int(self.x-cx),int(self.y-cy)
+        pygame.draw.rect(surf,(180,80,255),(sx-5,sy-5,10,10))
+        pygame.draw.rect(surf,(220,150,255),(sx-3,sy-3,6,6))
+
+# ───────────── 스폰 시스템 ─────────────
+class SpawnManager:
+    """화면 밖에서 시간/웨이브에 따라 적 스폰"""
+    def __init__(self):
+        self.timer=0; self.wave_t=0; self.wave=1; self.boss_spawned=False
+        self.total_kills=0; self.boss_alive=False
+
+    def update(self,pl,enemies,ps,dt):
+        self.timer+=dt; self.wave_t+=dt
+        # 매 N초마다 소규모 스폰
+        interval=max(0.8, 3.0 - self.wave*0.18)
+        if self.timer>=interval:
+            self.timer=0
+            cnt=2+self.wave
+            for _ in range(cnt): enemies.append(self._spawn_enemy(pl))
+        # 60초마다 웨이브 증가
+        if self.wave_t>=60:
+            self.wave_t=0; self.wave+=1
+            sparks(ps,pl.cx,pl.cy,C_GOLD,30)
+            # 5웨이브마다 보스
+            if self.wave%5==0 and not self.boss_alive:
+                b=self._spawn_boss(pl)
+                enemies.append(b); self.boss_alive=True
+
+    def _edge_pos(self,pl,margin=SPAWN_MARGIN):
+        """화면 밖 4방향 중 랜덤 위치"""
+        side=random.randint(0,3)
+        hw=SW/2+margin; hh=SH/2+margin
+        if side==0: x=pl.cx+random.uniform(-hw,hw); y=pl.cy-hh
+        elif side==1: x=pl.cx+random.uniform(-hw,hw); y=pl.cy+hh
+        elif side==2: x=pl.cx-hw; y=pl.cy+random.uniform(-hh,hh)
+        else:         x=pl.cx+hw; y=pl.cy+random.uniform(-hh,hh)
+        return max(50,min(MAP_W-50,x)), max(50,min(MAP_H-50,y))
+
+    def _spawn_enemy(self,pl):
+        x,y=self._edge_pos(pl)
+        weights=[4,3,2,2]; total=sum(weights[:min(self.wave,4)])
+        r=random.randint(0,total-1); s=0
+        for i,w in enumerate(weights[:min(self.wave,4)]):
+            s+=w
+            if r<s: return Enemy(x,y,ENEMY_TABLE[i])
+        return Enemy(x,y,ENEMY_TABLE[0])
+
+    def _spawn_boss(self,pl):
+        x,y=self._edge_pos(pl,margin=200)
+        return Boss(x,y)
+
+# ───────────── 맵 타일 렌더 ─────────────
+# 장식용 타일: 돌기둥, 풀 등 — 충돌 없는 배경 오브젝트
+DECO=[]
+random.seed(99)
+for _ in range(320):
+    DECO.append((random.randint(0,MAP_W//TILE-1)*TILE,
+                 random.randint(0,MAP_H//TILE-1)*TILE,
+                 random.randint(0,3)))  # 종류 0~3
+
+def draw_map(surf,cam_x,cam_y):
+    # 타일
+    sx=int(cam_x//TILE)*TILE; sy=int(cam_y//TILE)*TILE
+    for ty in range(sy, int(cam_y)+SH+TILE, TILE):
+        for tx in range(sx, int(cam_x)+SW+TILE, TILE):
+            if 0<=tx<MAP_W and 0<=ty<MAP_H:
+                c=C_FL if ((tx//TILE)+(ty//TILE))%2==0 else C_FL2
+                pygame.draw.rect(surf,c,(tx-cam_x,ty-cam_y,TILE,TILE))
+    # 맵 경계 벽
+    for tx in range(0,MAP_W,TILE):
+        pygame.draw.rect(surf,C_WALL,(tx-cam_x,-cam_y,TILE,TILE))
+        pygame.draw.rect(surf,C_WTOP,(tx-cam_x,-cam_y,TILE,4))
+        pygame.draw.rect(surf,C_WALL,(tx-cam_x,MAP_H-TILE-cam_y,TILE,TILE))
+    for ty in range(0,MAP_H,TILE):
+        pygame.draw.rect(surf,C_WALL,(-cam_x,ty-cam_y,TILE,TILE))
+        pygame.draw.rect(surf,C_WALL,(MAP_W-TILE-cam_x,ty-cam_y,TILE,TILE))
+    # 장식 오브젝트
+    for dx,dy,dk in DECO:
+        sx2=dx-cam_x; sy2=dy-cam_y
+        if -TILE<sx2<SW+TILE and -TILE<sy2<SH+TILE:
+            if dk==0:   # 돌기둥
+                pygame.draw.rect(surf,(55,45,70),(sx2+8,sy2+4,32,40))
+                pygame.draw.rect(surf,(75,62,92),(sx2+8,sy2+4,32,6))
+            elif dk==1: # 풀
+                for i in range(5):
+                    h=random.randint(8,18)
+                    pygame.draw.rect(surf,(50,100,50),(sx2+i*9+2,sy2+TILE-h,3,h))
+            elif dk==2: # 뼈
+                pygame.draw.rect(surf,(170,170,150),(sx2+12,sy2+18,24,8))
+                pygame.draw.rect(surf,(170,170,150),(sx2+14,sy2+10,6,20))
+                pygame.draw.rect(surf,(170,170,150),(sx2+28,sy2+10,6,20))
+            else:       # 묘비
+                pygame.draw.rect(surf,(80,70,100),(sx2+14,sy2+12,20,28))
+                pygame.draw.rect(surf,(80,70,100),(sx2+14,sy2+8,20,10))
+                pygame.draw.rect(surf,(100,90,120),(sx2+22,sy2+18,4,14))
+                pygame.draw.rect(surf,(100,90,120),(sx2+16,sy2+22,16,4))
+
+def get_cam(pl):
+    return (max(0,min(pl.cx-SW/2,MAP_W-SW)),
+            max(0,min(pl.cy-SH/2,MAP_H-SH)))
+
+# ───────────── 미니맵 ─────────────
+def draw_minimap(surf,pl,enemies):
+    mw,mh=160,100; mx2=SW-mw-8; my2=SH-mh-8
+    ms=pygame.Surface((mw,mh),pygame.SRCALPHA)
+    ms.fill((0,0,0,140))
+    # 플레이어 점
+    px=int(pl.cx/MAP_W*mw); py=int(pl.cy/MAP_H*mh)
+    pygame.draw.rect(ms,C_PLR,(px-2,py-2,4,4))
+    # 적 점 (화면 안 것만)
+    for e in enemies[:80]:
+        if e.alive:
+            ex=int(e.cx/MAP_W*mw);ey=int(e.cy/MAP_H*mh)
+            c=(255,60,60) if isinstance(e,Boss) else (220,80,80)
+            pygame.draw.rect(ms,c,(ex-1,ey-1,3,3))
+    pygame.draw.rect(ms,C_WHITE,(0,0,mw,mh),1)
+    surf.blit(ms,(mx2,my2))
+    pfont(11).render("미니맵",False,(150,130,170))
+
+# ───────────── HUD ─────────────
+def draw_hud(surf,pl,elapsed,wave,enemies,spawn):
+    f20=pfont(20);f16=pfont(16);f13=pfont(13)
+
+    # HP
+    tsh(surf,"HP",f13,C_WHITE,12,10)
+    hbar(surf,38,12,160,14,pl.hp,pl.mhp,C_GRN)
+
+    # 창
+    sc=C_SPEAR if pl.has_spear else (120,100,80)
+    tsh(surf,"창 보유" if pl.has_spear else "창 없음 [R:회수]",f13,sc,12,32)
+
+    # 공격 상태
+    s=pl.astate
+    if s==ASPIN:
+        prog=min(pl.spin_t/SPIN_T,1.0)
+        hbar(surf,12,52,120,10,prog*100,100,(100,200,255))
+        tsh(surf,"창 돌리는 중...",f13,(180,230,255),12,64)
+    elif s==AP:
+        tc=(255,60,60) if pl.enhanced else C_PARRY
+        tsh(surf,">> 패링! 좌클릭 = 카운터 <<",f16,tc,12,52)
+        hbar(surf,12,72,160,8,pl.par_fr*100//PARRY_W,100,tc)
+    elif s==AC:
+        tsh(surf,"COUNTER!!",f20,C_COUNTER,12,52)
+
+    # 시간·웨이브·점수
+    m=int(elapsed)//60; se=int(elapsed)%60
+    tsh(surf,f"{m:02d}:{se:02d}",f20,C_WHITE,SW//2-30,8)
+    tsh(surf,f"WAVE {wave}",f16,C_GOLD,SW//2-38,36)
+    tsh(surf,f"적 {len([e for e in enemies if e.alive])}마리",f13,C_WHITE,SW-120,10)
+    tsh(surf,f"처치 {pl.kills}",f13,C_WHITE,SW-120,28)
+    tsh(surf,f"SCORE {pl.score}",f13,C_WHITE,SW-120,46)
+
+    # 조작
+    tsh(surf,"좌클릭:찌르기  우클릭홀드:패링  E:투척  R:창회수",
+        f13,(100,85,125),10,SH-20)
+
+# ───────────── 타이틀 ─────────────
+def draw_title(surf,tick):
+    surf.fill(C_BG)
+    f52=pfont(52);f22=pfont(22);f16=pfont(16)
+    p=abs(math.sin(tick/40))*30
+    c=(int(180+p),int(100+p//2),int(220+p//3))
+    t=f52.render("SPEAR SURVIVORS",False,c)
+    surf.blit(t,(SW//2-t.get_width()//2,110))
+    s=f22.render("창 하나로 끝없는 밤을 버텨라",False,C_GOLD)
+    surf.blit(s,(SW//2-s.get_width()//2,190))
+    lines=["WASD : 이동",
+           "좌클릭 : 찌르기 (풍압 발생)",
+           "우클릭 홀드 0.5초 : 패링 준비",
+           "  └ 패링 중 피격 → 강화 카운터",
+           "  └ 카운터 대기 중 좌클릭 → 카운터!",
+           "E : 창 투척    R : 창 회수"]
+    for i,l in enumerate(lines):
+        surf.blit(f16.render(l,False,(180,160,200)),(SW//2-160,280+i*26))
+    blink=f22.render("[ SPACE / ENTER — 시작 ]",False,
+                     C_WHITE if (tick//30)%2==0 else (80,60,100))
+    surf.blit(blink,(SW//2-blink.get_width()//2,460))
+
+# ───────────── 메인 ─────────────
+def main():
+    pygame.init()
+    pygame.display.set_caption("SPEAR SURVIVORS")
+    screen=pygame.display.set_mode((SW,SH))
+    clock=pygame.time.Clock()
+
+    ST,SP,WIN,LOSE="title","play","win","lose"
+    state=ST; tick=0
+
+    def new_game():
+        pl=Player()
+        spawn=SpawnManager()
+        enemies=[]; thrown=[]; proj=[]; ps=[]
+        elapsed=0.0
+        return pl,spawn,enemies,thrown,proj,ps,elapsed
+
+    pl,spawn,enemies,thrown,proj,ps,elapsed=new_game()
+    final_score=0
+    mb_l=mb_r=False; ke=kr=False
+
+    while True:
+        dt=clock.tick(FPS)/1000.0; tick+=1
+        keys=pygame.key.get_pressed()
+        mx,my=pygame.mouse.get_pos()
+        mb_l=kr=ke=False
+
+        for ev in pygame.event.get():
+            if ev.type==pygame.QUIT: pygame.quit();sys.exit()
+            if ev.type==pygame.KEYDOWN:
+                if ev.key==pygame.K_ESCAPE: pygame.quit();sys.exit()
+                if state==ST and ev.key in (pygame.K_SPACE,pygame.K_RETURN):
+                    pl,spawn,enemies,thrown,proj,ps,elapsed=new_game(); state=SP
+                elif state in (WIN,LOSE):
+                    if ev.key==pygame.K_r:
+                        pl,spawn,enemies,thrown,proj,ps,elapsed=new_game(); state=SP
+                    elif ev.key in (pygame.K_SPACE,pygame.K_RETURN): state=ST
+                elif state==SP:
+                    if ev.key==pygame.K_e: ke=True
+                    if ev.key==pygame.K_r: kr=True
+            if ev.type==pygame.MOUSEBUTTONDOWN:
+                if ev.button==1: mb_l=True
+                if ev.button==3: mb_r=True
+            if ev.type==pygame.MOUSEBUTTONUP:
+                if ev.button==3: mb_r=False
+
+        if state==ST:
+            draw_title(screen,tick); pygame.display.flip(); continue
+
+        if state in (WIN,LOSE):
+            screen.fill(C_BG)
+            fn=pfont(52); fs=pfont(22)
+            col=C_GRN if state==WIN else C_RED
+            msg="CLEAR!" if state==WIN else "GAME OVER"
+            ov=pygame.Surface((SW,SH),pygame.SRCALPHA); ov.fill((0,0,0,160)); screen.blit(ov,(0,0))
+            t=fn.render(msg,False,col); screen.blit(t,(SW//2-t.get_width()//2,SH//2-80))
+            sub=f"SCORE {final_score}  처치 {pl.kills}  |  R:재시작  ENTER:타이틀"
+            s=fs.render(sub,False,C_WHITE); screen.blit(s,(SW//2-s.get_width()//2,SH//2+10))
+            pygame.display.flip(); continue
+
+        # ── PLAY ──
+        cam_x,cam_y=get_cam(pl)
+        elapsed+=dt
+
+        pl.update(keys,dt,mx,my,cam_x,cam_y,enemies,ps,thrown,mb_l,mb_r,ke,kr)
+
+        # 투척 창
+        for sp in thrown[:]:
+            sp.update(enemies,ps,pl)
+            if not sp.alive: thrown.remove(sp)
+
+        # 적 업데이트
+        prev=len(enemies)
+        for e in enemies[:]:
+            if not e.alive:
+                sparks(ps,e.cx,e.cy,e.col,18)
+                pl.score+=e.sc; pl.kills+=1
+                if isinstance(e,Boss): spawn.boss_alive=False
+                enemies.remove(e); continue
+            if isinstance(e,Boss): e.update(pl,ps,proj)
+            else: e.update(pl,ps)
+
+        # 보스 투사체
+        for p in proj[:]:
+            p.update()
+            if not p.alive: proj.remove(p); continue
+            if dist(p.x,p.y,pl.cx,pl.cy)<16:
+                par=pl.take_dmg(18,ps)
+                sparks(ps,p.x,p.y,C_PARRY if par else (180,80,255),10)
+                proj.remove(p)
+
+        # 파티클
+        for pt in ps[:]:
+            pt.update()
+            if pt.life<=0: ps.remove(pt)
+
+        # 스폰
+        spawn.update(pl,enemies,ps,dt)
+
+        if pl.hp<=0: final_score=pl.score; state=LOSE
+
+        # ── 렌더 ──
+        screen.fill(C_BG)
+        draw_map(screen,cam_x,cam_y)
+
+        for pt in ps: pt.draw(screen,cam_x,cam_y)
+        for p in proj: p.draw(screen,cam_x,cam_y)
+        for sp in thrown: sp.draw(screen,cam_x,cam_y)
+        for e in enemies: e.draw(screen,cam_x,cam_y)
+        pl.draw(screen,cam_x,cam_y,ps)
+        draw_hud(screen,pl,elapsed,spawn.wave,enemies,spawn)
+        draw_minimap(screen,pl,enemies)
+
+        # 웨이브 알림 (웨이브 시작 직후 2초)
+        if spawn.wave_t<2.0:
+            fn=pfont(32); msg=f"WAVE {spawn.wave}"+(" ─ BOSS!" if spawn.boss_alive else "")
+            tsh(screen,msg,fn,C_GOLD,SW//2-fn.size(msg)[0]//2,SH//2-20)
+
+        pygame.display.flip()
+
+if __name__=="__main__":
+    main()
